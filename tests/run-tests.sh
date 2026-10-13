@@ -127,6 +127,8 @@ fi
 if [ "$MODE" = "admin" ]; then
 echo "===== 7. SHUT-OFF: one agent, then everything ====="
 KC="$(kc agent-bus-key-claude-compliance)"
+good=0; for i in $(seq 1 60); do c="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "$B/healthz")"; if [ "$c" = "200" ]; then good=$((good+1)); else good=0; fi; [ "$good" -ge 6 ] && break; sleep 5; done
+[ "$good" -ge 6 ] || { echo "STOPPED: the relay is not steady (last HTTP $c). Try again in a few minutes."; exit 1; }
 check "before the cut-off the agent's key works" "$(get "$KC" "/messages")" "200"
 python3 admin/bus-admin.py cutoff claude-compliance </dev/null >/tmp/bus-cutoff.log 2>&1 &
 sleep 6
@@ -138,12 +140,14 @@ check "after the relay restarts the cut-off agent's key is gone" "$(get "$KC" "/
 python3 admin/bus-admin.py restore claude-compliance </dev/null >/tmp/bus-restore.log 2>&1
 c="401"; for i in $(seq 1 10); do c="$(get "$KC" "/messages")"; [ "$c" = "200" ] && break; sleep 5; done
 check "a restored agent works again" "$c" "200"
-python3 admin/bus-admin.py shutdown </dev/null >/dev/null 2>&1
+python3 admin/bus-admin.py shutdown </dev/null >/tmp/bus-shutdown.log 2>&1; rc=$?
+check "Render confirms the relay is suspended" "$rc" "0"
 c="200"; for i in $(seq 1 12); do c="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "$B/healthz")"; [ "$c" != "200" ] && break; sleep 5; done
 [ "$c" != "200" ] && ok "shutdown takes the whole relay offline (HTTP $c)" || bad "shutdown takes the whole relay offline" "still answering"
-python3 admin/bus-admin.py resume </dev/null >/dev/null 2>&1
-t0=$(date +%s); good=0; for i in $(seq 1 70); do c="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "$B/healthz")"; if [ "$c" = "200" ]; then good=$((good+1)); else good=0; fi; [ "$good" -ge 4 ] && break; sleep 5; done
-[ "$good" -ge 4 ] && ok "resume brings the relay back and it stays up (steady after $(( $(date +%s) - t0 ))s)" || bad "resume brings the relay back and it stays up" "last HTTP $c"
+python3 admin/bus-admin.py resume </dev/null >/tmp/bus-resume.log 2>&1; rc=$?
+check "Render confirms the relay is resumed" "$rc" "0"
+t0=$(date +%s); good=0; for i in $(seq 1 100); do c="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "$B/healthz")"; if [ "$c" = "200" ]; then good=$((good+1)); else good=0; fi; [ "$good" -ge 12 ] && break; sleep 5; done
+[ "$good" -ge 12 ] && ok "resume brings the relay back and it stays up (steady after $(( $(date +%s) - t0 ))s)" || bad "resume brings the relay back and it stays up" "last HTTP $c"
 sleep 20; body='{"to":"claude-compliance","type":"alert","payload":"Relay is back after the shut-off test."}'; code="$(post "$KO" "$body")"; check "after resume the bus carries messages again" "$code" "201"
 fi
 

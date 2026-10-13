@@ -41,8 +41,11 @@ def render(method, path, body=None):
 def relay(path, method="GET"):
     return http(method, BASE + path, {"Authorization": "Bearer " + kc("agent-bus-key-ops")}, None, 30)
 def service_id():
-    code, found = render("GET", "/services?name=%s&limit=5" % SERVICE)
-    return found[0]["service"]["id"], found[0]["service"]
+    for attempt in range(4):
+        code, found = render("GET", "/services?name=%s&limit=5" % SERVICE)
+        if code == 200 and found: return found[0]["service"]["id"], found[0]["service"]
+        time.sleep(2 + attempt * 2)
+    raise RuntimeError("Render did not return the service (HTTP %s)" % code)
 def cut_list():
     try: return json.load(open(CUT_FILE))
     except Exception: return []
@@ -64,13 +67,20 @@ def sync(deploy=True):
     bad = [k for k, v in values.items() if not v]
     if bad: sys.exit("STOPPED: missing value for %s" % bad)
     for k, v in values.items():
-        code, _ = render("PUT", "/services/%s/env-vars/%s" % (sid, k), {"value": v})
+        for attempt in range(4):
+            code, _ = render("PUT", "/services/%s/env-vars/%s" % (sid, k), {"value": v})
+            if code == 200: break
+            time.sleep(3 + attempt * 3)
         if code != 200: sys.exit("STOPPED: could not set %s (HTTP %s)" % (k, code))
     print("Agents allowed on the bus: " + ", ".join(active))
     if cut: print("Cut off: " + ", ".join(cut))
     if deploy:
-        code, d = render("POST", "/services/%s/deploys" % sid, {"clearCache": "do_not_clear"})
+        for attempt in range(4):
+            code, d = render("POST", "/services/%s/deploys" % sid, {"clearCache": "do_not_clear"})
+            if code in (200, 201, 202) and d.get("id"): break
+            time.sleep(3 + attempt * 3)
         did = d.get("id", "")
+        if not did: sys.exit("STOPPED: Render did not start the redeploy (HTTP %s). The key change is saved and takes effect at the next deploy." % code)
         print("Redeploying the relay...")
         for _ in range(40):
             code, dd = render("GET", "/services/%s/deploys/%s" % (sid, did))
@@ -115,9 +125,26 @@ def main():
         print(("%s is cut off now." % arg if cmd == "cutoff" else "%s is restored on the running relay." % arg) if code == 200 else ("The running relay did not confirm (HTTP %s). Continuing with the key change." % code if cmd == "cutoff" else "Restoring the key."))
         save_cut(cut); sync(True)
     elif cmd in ("shutdown", "resume"):
-        sid, _ = service_id()
-        code, _ = render("POST", "/services/%s/%s" % (sid, "suspend" if cmd == "shutdown" else "resume"))
-        print(("Relay suspended. Every agent is cut off." if cmd == "shutdown" else "Relay resuming. Allow about three minutes.") if code in (200, 202) else "Render refused (HTTP %s)" % code)
+        # Render's API can refuse or time out for a moment. Keep trying, then confirm the real state before reporting.
+        want = "suspended" if cmd == "shutdown" else "not_suspended"
+        state, code = "?", 0
+        for attempt in range(8):
+            try:
+                sid, svc = service_id()
+                state = svc.get("suspended", "?")
+                if state == want: break
+                code, _ = render("POST", "/services/%s/%s" % (sid, "suspend" if cmd == "shutdown" else "resume"))
+            except Exception:
+                code = 0
+            time.sleep(2 + attempt * 2)
+        if state != want:
+            try: state = service_id()[1].get("suspended", "?")
+            except Exception: pass
+        if state == want:
+            print("Relay suspended. Every agent is cut off." if cmd == "shutdown" else "Relay resuming. Allow about three minutes.")
+        else:
+            print("NOT CONFIRMED: Render did not accept the %s command (last HTTP %s). Open the Render dashboard, service agent-bus-relay, and press %s." % (cmd, code, "Suspend Service" if cmd == "shutdown" else "Resume Service"))
+            sys.exit(1)
     elif cmd == "sync": sync(True)
     else: print(__doc__ or "see the comments at the top of this file")
 main()
