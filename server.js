@@ -120,20 +120,32 @@ async function channelMessages(maxAgeMs) {
   if (reads.length >= READS_PER_MIN && cache.at) return cache;
   if (inflight) return inflight;
   inflight = (async () => {
-    try {
-      reads.push(Date.now());
-      const r = await cliq("GET", "/chats/" + encodeURIComponent(CHAT_ID) + "/messages?limit=100");
-      if (r.status !== 200 && r.status !== 204) throw new Error("cliq_read_failed:" + r.status + ":" + (r.json.code || ""));
-      const messages = (r.json.data || []).map((m) => {
-        const text = m.content && typeof m.content.text === "string" ? m.content.text : "";
-        return { id: m.id, time: Number(m.time) || 0, sender: (m.sender && m.sender.name) || "", text, envelope: parseEnvelope(text) };
-      }).sort((a, b) => a.time - b.time);
-      cache = { at: Date.now(), messages, error: null };
-      for (const m of messages) if (m.time > lastNotified && m.envelope) notify(m);
-      if (messages.length) lastNotified = Math.max(lastNotified, messages[messages.length - 1].time);
-    } catch (e) {
-      cache = { at: Date.now(), messages: cache.messages, error: String(e.message || e) };
-    } finally { inflight = null; }
+    // One retry: a single failed read of Cliq must not make the bus look down.
+    let lastErr = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        reads.push(Date.now());
+        const r = await cliq("GET", "/chats/" + encodeURIComponent(CHAT_ID) + "/messages?limit=100");
+        if (r.status !== 200 && r.status !== 204) throw new Error("cliq_read_failed:" + r.status + ":" + (r.json.code || ""));
+        const messages = (r.json.data || []).map((m) => {
+          const text = m.content && typeof m.content.text === "string" ? m.content.text : "";
+          return { id: m.id, time: Number(m.time) || 0, sender: (m.sender && m.sender.name) || "", text, envelope: parseEnvelope(text) };
+        }).sort((a, b) => a.time - b.time);
+        cache = { at: Date.now(), messages, error: null };
+        for (const m of messages) if (m.time > lastNotified && m.envelope) notify(m);
+        if (messages.length) lastNotified = Math.max(lastNotified, messages[messages.length - 1].time);
+        lastErr = null;
+        break;
+      } catch (e) {
+        lastErr = e;
+        if (attempt === 0) await new Promise((ok) => setTimeout(ok, 1500));
+      }
+    }
+    if (lastErr) {
+      cache = { at: Date.now(), messages: cache.messages, error: String(lastErr.message || lastErr) };
+      audit("cliq_read_failed", { error: cache.error.slice(0, 120) });
+    }
+    inflight = null;
     return cache;
   })();
   return inflight;
@@ -431,4 +443,8 @@ const server = http.createServer(async (req, res) => {
     return send(res, 500, { error: "internal", detail: String(e.message || e).slice(0, 120) });
   }
 });
+// Render's proxy keeps idle connections open and reuses them. Node's default (5 seconds) closes them first,
+// which shows up as an occasional 502. Hold connections open longer than the proxy does.
+server.keepAliveTimeout = 120000;
+server.headersTimeout = 125000;
 server.listen(PORT, () => console.log("agent-bus-relay v5 on " + PORT + ", channel " + (CHANNEL || "(unset)") + ", agents: " + [...AGENTS].join(", ") + ", outside: " + [...EXTERNAL].join(", ") + ", front door: " + FRONT_DOOR));
