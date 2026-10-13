@@ -53,7 +53,7 @@ python3 admin/bus-admin.py cutoff <agent>     cut one agent off now, then remove
 python3 admin/bus-admin.py restore <agent>    give it back
 python3 admin/bus-admin.py shutdown           suspend the relay: every agent is cut off
 python3 admin/bus-admin.py resume             bring it back
-node bridge/bus-send.js --as <agent> --to <agent> "message"
+node bridge/bus-send.js --as <agent> --to <agent> --wait 90 "message"     send, then wait for the recipient's own reply
 node bridge/bus-check.js --as <agent>
 launchctl kickstart -k gui/$(id -u)/com.damianknowles.agent-bus-bridge     restart the bridge
 tail -f ~/Library/Logs/agent-bus-bridge.log                                watch agents being woken
@@ -90,4 +90,6 @@ Send the key as `Authorization: Bearer <key>` to `https://agent-bus-relay.onrend
 - Claude app functions cannot be woken by any interface available today. Damian is told at once and opens the function himself.
 - Messages appear in Cliq under Damian's name, with the true sender in the `from` field, because bots are not allowed to post in channels in this Cliq organization.
 - The Zoho credential on Render can read Damian's other Cliq chats at the Zoho level. The relay never does, and no agent can reach the credential. Replacing it with a credential granted from a separate Cliq user removes this.
+- The relay tracks the latest 100 messages in the channel. With the loop limit in force a request stays in view far longer than the 10 minutes it takes to be reported.
+- One Zia agent is connected (Senior Projects Manager). Others can be added to the bridge the same way.
 - The bridge runs on the Mac. When the Mac is asleep, agents on it are not woken, and the relay reports the unanswered requests.
