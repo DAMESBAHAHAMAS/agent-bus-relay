@@ -1,20 +1,29 @@
-// agent-bus-relay v2: the only door between agents and the Zoho Cliq "agent-bus" channel.
-// - Agents authenticate with a service key. No agent ever sees a Zoho credential.
-// - ONE channel only, fixed by environment variables. No endpoint accepts a chat ID or channel name.
-// - Push: a recipient waiting on /wait is released the instant a message for it is posted.
-// - Acknowledgment: every request is tracked until the RECIPIENT ITSELF replies. Silence is
-//   re-notified, then reported in the channel. The relay never acknowledges on anyone's behalf.
-// - No delete calls exist in this code.
+// agent-bus-relay v3: the only door between agents and the Zoho Cliq "agent-bus" channel.
+//
+// What it guarantees, in code:
+//  1. Credentials  - agents hold a service key only. No Zoho credential ever leaves this service.
+//  2. Private data - ONE channel only, fixed by environment variables. No endpoint accepts a chat ID.
+//  3. Authority    - outside agents may only send requests to the front-door agent. Everything else is refused.
+//  4. Identity     - "from" is set from the caller's key, and every message is signed. Unsigned text in the
+//                    channel is never treated as an agent message.
+//  5. Leakage      - secrets are refused on every message; identity and payment numbers are refused toward outside agents.
+//  6. Loops, cost  - per-agent rate limit, and a hop limit that only a human message resets.
+//  7. Audit        - every exchange and every refusal is visible in the channel and in /audit.
+//  Acknowledgment  - every request is tracked until the RECIPIENT ITSELF replies. The relay never
+//                    acknowledges for anyone. Silence is re-notified, then reported in the channel.
+//  No delete calls exist in this code.
 const http = require("http");
 const crypto = require("crypto");
 
 const env = (k, d) => (process.env[k] === undefined || process.env[k] === "" ? d : process.env[k]);
+const list = (k) => env(k, "").split(",").map((s) => s.trim()).filter(Boolean);
 const PORT = Number(env("PORT", "10000"));
 const ACCOUNTS = env("ZOHO_ACCOUNTS_URL", "https://accounts.zoho.com");
 const CLIQ = env("CLIQ_API_BASE", "https://cliq.zoho.com/api/v2");
 const CHANNEL = env("CHANNEL_UNIQUE_NAME", "");
 const CHAT_ID = env("CHANNEL_CHAT_ID", "");
 const BOT = env("BOT_UNIQUE_NAME", "");
+const SIGNING = env("BUS_SIGNING_SECRET", "");
 const HOP_LIMIT = Number(env("HOP_LIMIT", "6"));
 const POLL_MS = Math.max(5000, Number(env("POLL_MS", "10000")));
 const POSTS_PER_MIN = Number(env("POSTS_PER_MIN", "20"));
@@ -30,13 +39,48 @@ for (const pair of env("SERVICE_KEYS", "").split(",")) {
   if (i > 0) KEYS.set(pair.slice(i + 1).trim(), pair.slice(0, i).trim());
 }
 const AGENTS = new Set(KEYS.values());
+const EXTERNAL = new Set(list("EXTERNAL_AGENTS"));   // agents outside Damian's business functions
+const FRONT_DOOR = env("FRONT_DOOR", "bizops");      // the only agent an outside agent may send a request to
+const ADMINS = new Set(list("ADMIN_AGENTS"));        // may read /audit
+const isExternal = (a) => EXTERNAL.has(a);
 
-const HOOKS = new Map(); // optional: AGENT_WEBHOOKS = "agent|https://url|secret;agent|https://url|secret"
-for (const row of env("AGENT_WEBHOOKS", "").split(";")) {
-  const p = row.split("|");
-  if (p.length === 3 && p[1].startsWith("https://")) HOOKS.set(p[0].trim(), { url: p[1].trim(), secret: p[2].trim() });
+// ---------- signing ----------
+const canon = (e) => JSON.stringify([e.from, e.to, e.type, e.correlation_id, e.ts, JSON.stringify(e.payload)]);
+const sign = (e) => crypto.createHmac("sha256", SIGNING).update(canon(e)).digest("hex");
+function parseEnvelope(text) {
+  try {
+    const e = JSON.parse(text);
+    if (!e || typeof e !== "object" || !e.from || !e.to || !TYPES.includes(e.type) || !e.correlation_id || !e.sig) return null;
+    const a = Buffer.from(String(e.sig)), b = Buffer.from(sign(e));
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null; // forged or altered: not an agent message
+    return e;
+  } catch (e) { return null; }
 }
 
+// ---------- leak filter ----------
+const SECRET_PATTERNS = [
+  [/\b1000\.[0-9a-f]{20,}\.[0-9a-f]{20,}\b/i, "a Zoho token or grant code"],
+  [/\b[0-9a-f]{40,}\b/i, "a long key or token"],
+  [/\bsk-[A-Za-z0-9_-]{20,}/, "an API key"],
+  [/\b(rnd|ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{20,}/, "an API key"],
+  [/\bxox[abprs]-[A-Za-z0-9-]{10,}/, "a Slack token"],
+  [/\bAKIA[0-9A-Z]{16}\b/, "a cloud access key"],
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "a private key"],
+  [/\bBearer\s+[A-Za-z0-9._~+\/-]{24,}/i, "a bearer token"],
+  [/\b(password|passwd|client_secret|refresh_token|api[_-]?key)\s*[:=]\s*["']?(?=[A-Za-z0-9._\/+-]*\d)[A-Za-z0-9._\/+-]{12,}/i, "a credential"],
+];
+function luhn(d) { let s = 0, alt = false; for (let i = d.length - 1; i >= 0; i--) { let n = +d[i]; if (alt) { n *= 2; if (n > 9) n -= 9; } s += n; alt = !alt; } return s % 10 === 0; }
+function leakReason(text, towardExternal) {
+  for (const [re, what] of SECRET_PATTERNS) if (re.test(text)) return what;
+  if (towardExternal) {
+    if (/\b\d{3}-\d{2}-\d{4}\b/.test(text)) return "a Social Security number";
+    if (/\b\d{2}-\d{7}\b/.test(text)) return "an employer identification number";
+    for (const m of text.matchAll(/\b(?:\d[ -]?){13,19}\b/g)) { const d = m[0].replace(/\D/g, ""); if (d.length >= 13 && d.length <= 19 && luhn(d)) return "a payment card number"; }
+  }
+  return null;
+}
+
+// ---------- Zoho ----------
 let access = { token: "", expires: 0 };
 async function accessToken() {
   if (access.token && Date.now() < access.expires - 300000) return access.token;
@@ -48,7 +92,6 @@ async function accessToken() {
   access = { token: j.access_token, expires: Date.now() + (Number(j.expires_in) || 3600) * 1000 };
   return access.token;
 }
-
 async function cliq(method, path, body) {
   const r = await fetch(CLIQ + path, { method,
     headers: { Authorization: "Zoho-oauthtoken " + (await accessToken()), "Content-Type": "application/json" },
@@ -59,15 +102,11 @@ async function cliq(method, path, body) {
   return { status: r.status, json };
 }
 
-function parseEnvelope(text) {
-  try {
-    const e = JSON.parse(text);
-    if (e && typeof e === "object" && e.from && e.to && TYPES.includes(e.type) && e.correlation_id) return e;
-  } catch (e) {}
-  return null;
-}
+// ---------- audit trail (in memory; the channel itself is the permanent record) ----------
+const events = [];
+function audit(kind, detail) { events.push(Object.assign({ at: Date.now(), kind }, detail)); if (events.length > 400) events.shift(); }
 
-// ---- one shared, cached view of the channel ----
+// ---------- one shared, cached view of the channel ----------
 let cache = { at: 0, messages: [], error: null };
 let inflight = null;
 let reads = [];
@@ -75,7 +114,7 @@ let lastNotified = Date.now();
 async function channelMessages(maxAgeMs) {
   if (Date.now() - cache.at < maxAgeMs) return cache;
   reads = reads.filter((t) => Date.now() - t < 60000);
-  if (reads.length >= READS_PER_MIN && cache.at) return cache; // protect Zoho's read limit
+  if (reads.length >= READS_PER_MIN && cache.at) return cache;
   if (inflight) return inflight;
   inflight = (async () => {
     try {
@@ -87,7 +126,6 @@ async function channelMessages(maxAgeMs) {
         return { id: m.id, time: Number(m.time) || 0, sender: (m.sender && m.sender.name) || "", text, envelope: parseEnvelope(text) };
       }).sort((a, b) => a.time - b.time);
       cache = { at: Date.now(), messages, error: null };
-      // wake anyone waiting on messages that arrived by another route (for example typed in Cliq)
       for (const m of messages) if (m.time > lastNotified && m.envelope) notify(m);
       if (messages.length) lastNotified = Math.max(lastNotified, messages[messages.length - 1].time);
     } catch (e) {
@@ -98,18 +136,19 @@ async function channelMessages(maxAgeMs) {
   return inflight;
 }
 
-// ---- loop guardrail: agent messages in a row since the last human message (acknowledgments and relay notices do not count) ----
+// ---------- loop guardrail: agent messages in a row since the last human message ----------
+// Acknowledgments and relay notices do not count, because they cannot start a loop.
 function hopsSinceHuman(messages) {
   let n = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     const e = messages[i].envelope;
     if (!e) break;
-    if (e.from !== RELAY && e.type !== "ack") n++; // acknowledgments cannot start a loop
+    if (e.from !== RELAY && e.type !== "ack") n++;
   }
   return n;
 }
 
-// ---- acknowledgment ledger, derived from the channel itself so it survives restarts ----
+// ---------- acknowledgment ledger, derived from the channel so it survives restarts ----------
 function ledger(messages) {
   const out = [];
   for (const m of messages) {
@@ -117,7 +156,7 @@ function ledger(messages) {
     if (!e || e.type !== "request" || e.to === "all" || e.from === RELAY) continue;
     const ack = messages.find((x) => x.envelope && x.time >= m.time && x.envelope.correlation_id === e.correlation_id &&
       x.envelope.from === e.to && (x.envelope.type === "ack" || x.envelope.type === "result"));
-    const escalated = messages.some((x) => x.envelope && x.envelope.from === RELAY && x.envelope.correlation_id === e.correlation_id);
+    const escalated = messages.some((x) => x.envelope && x.envelope.from === RELAY && x.envelope.correlation_id === e.correlation_id && /^NO ACKNOWLEDGMENT/.test(String(x.envelope.payload)));
     out.push({ correlation_id: e.correlation_id, from: e.from, to: e.to, requested_at: m.time, message_id: m.id,
       state: ack ? "acknowledged" : escalated ? "escalated" : "pending", acknowledged_at: ack ? ack.time : null,
       acknowledged_by: ack ? ack.envelope.from : null, waiting_seconds: ack ? Math.round((ack.time - m.time) / 1000) : Math.round((Date.now() - m.time) / 1000) });
@@ -127,11 +166,23 @@ function ledger(messages) {
 const forAgent = (m, agent) => m.envelope && (m.envelope.to === agent || m.envelope.to === "all") && m.envelope.from !== agent;
 const pendingFor = (messages, agent) => ledger(messages).filter((r) => r.to === agent && r.state !== "acknowledged");
 
-// ---- push: release waiters, and call a webhook if the agent has one ----
-const waiters = new Map(); // agent -> Set(fn)
-const pushLog = new Map(); // message id -> { agent: result }
+// ---------- routing rules: who may message whom ----------
+function routeDenied(from, to, type, cid, messages) {
+  if (!isExternal(from)) return null; // Damian's own agents may message anyone
+  if (to === "all") return "Outside agents may not broadcast.";
+  if (type === "ack" || type === "result") {
+    const open = messages.some((m) => m.envelope && m.envelope.type === "request" && m.envelope.correlation_id === cid && m.envelope.to === from && m.envelope.from === to);
+    return open ? null : "Outside agents may only reply to a request that was addressed to them.";
+  }
+  if (to !== FRONT_DOOR) return "Outside agents may only message " + FRONT_DOOR + ".";
+  return null;
+}
+
+// ---------- push: release waiting listeners ----------
+const waiters = new Map();
+const pushLog = new Map();
 function notify(m) {
-  const targets = m.envelope.to === "all" ? [...AGENTS].filter((a) => a !== m.envelope.from) : [m.envelope.to];
+  const targets = m.envelope.to === "all" ? [...AGENTS].filter((a) => a !== m.envelope.from && !isExternal(a)) : [m.envelope.to];
   for (const agent of targets) {
     const set = waiters.get(agent);
     const live = set ? set.size : 0;
@@ -139,41 +190,50 @@ function notify(m) {
     const log = pushLog.get(m.id) || {};
     log[agent] = live ? "delivered_to_waiting_listener" : (log[agent] || "queued_until_agent_checks");
     pushLog.set(m.id, log);
-    const hook = HOOKS.get(agent);
-    if (hook) {
-      const body = JSON.stringify({ message_id: m.id, time: m.time, envelope: m.envelope });
-      const sig = crypto.createHmac("sha256", hook.secret).update(body).digest("hex");
-      fetch(hook.url, { method: "POST", headers: { "Content-Type": "application/json", "X-Bus-Signature": "sha256=" + sig }, body, signal: AbortSignal.timeout(8000) })
-        .then((r) => { log[agent] = "webhook_http_" + r.status; }).catch(() => { log[agent] = "webhook_unreachable"; });
-    }
   }
   if (pushLog.size > 500) pushLog.delete(pushLog.keys().next().value);
 }
 
-async function postEnvelope(envelope) {
+async function postEnvelope(fields) {
+  const envelope = Object.assign({}, fields, { ts: Date.now() });
+  envelope.sig = sign(envelope);
   const text = JSON.stringify(envelope);
   const path = "/channelsbyname/" + encodeURIComponent(CHANNEL) + "/message" + (BOT ? "?bot_unique_name=" + encodeURIComponent(BOT) : "");
   const r = await cliq("POST", path, { text, sync_message: true });
   if (r.status < 200 || r.status > 299) return { ok: false, status: r.status, code: r.json.code };
   const m = { id: decodeURIComponent(String(r.json.message_id || crypto.randomUUID())).replace(" ", "_"), time: Date.now(), sender: "", text, envelope };
-  cache.messages.push(m); // keep our view current without spending a read
+  cache.messages.push(m);
   lastNotified = Math.max(lastNotified, m.time);
   notify(m);
+  audit("posted", { from: envelope.from, to: envelope.to, type: envelope.type, correlation_id: envelope.correlation_id });
   return { ok: true, message: m };
 }
 
-// ---- the watchdog: re-notify silent recipients, then report them in the channel ----
+// A refusal is reported in the channel so Damian sees it. Limited so a misbehaving agent cannot flood the channel.
+const refusalLog = new Map();
+async function refuse(res, status, agent, code, detail, to) {
+  audit("refused", { from: agent, to, code, detail });
+  const now = Date.now();
+  const recent = (refusalLog.get(agent) || []).filter((t) => now - t < 600000);
+  if (recent.length < 5 && CHANNEL && CHAT_ID && SIGNING) {
+    recent.push(now); refusalLog.set(agent, recent);
+    try { await postEnvelope({ from: RELAY, to: agent, type: "alert", correlation_id: "refused-" + crypto.randomUUID().slice(0, 8), payload: "REFUSED: a message from " + agent + (to ? " to " + to : "") + " was not carried. " + detail }); } catch (e) {}
+  }
+  return send(res, status, { error: code, detail });
+}
+
+// ---------- watchdog: re-notify silent recipients, then report them in the channel ----------
 const reminded = new Set();
 const escalating = new Set();
 async function watchdog() {
   try {
-    if (!CHANNEL || !CHAT_ID) return;
+    if (!CHANNEL || !CHAT_ID || !SIGNING) return;
     const c = await channelMessages(15000);
     for (const r of ledger(c.messages)) {
       if (r.state === "acknowledged") continue;
       const age = Date.now() - r.requested_at;
       const req = c.messages.find((m) => m.id === r.message_id);
-      if (age > ACK_REMIND_MS && !reminded.has(r.correlation_id) && req) { reminded.add(r.correlation_id); notify(req); }
+      if (age > ACK_REMIND_MS && !reminded.has(r.correlation_id) && req) { reminded.add(r.correlation_id); notify(req); audit("reminded", { to: r.to, correlation_id: r.correlation_id }); }
       if (age > ACK_ESCALATE_MS && r.state === "pending" && !escalating.has(r.correlation_id)) {
         escalating.add(r.correlation_id);
         await postEnvelope({ from: RELAY, to: r.from, type: "alert", correlation_id: r.correlation_id,
@@ -187,9 +247,9 @@ setInterval(watchdog, 20000);
 const postLog = new Map();
 function underRate(agent) {
   const now = Date.now();
-  const list = (postLog.get(agent) || []).filter((t) => now - t < 60000);
-  if (list.length >= POSTS_PER_MIN) { postLog.set(agent, list); return false; }
-  list.push(now); postLog.set(agent, list); return true;
+  const l = (postLog.get(agent) || []).filter((t) => now - t < 60000);
+  if (l.length >= POSTS_PER_MIN) { postLog.set(agent, l); return false; }
+  l.push(now); postLog.set(agent, l); return true;
 }
 function send(res, status, obj) {
   if (res.writableEnded) return;
@@ -198,7 +258,7 @@ function send(res, status, obj) {
 }
 function agentFor(req) {
   const h = req.headers["authorization"] || "";
-  const key = h.startsWith("Bearer ") ? h.slice(7).trim() : (req.headers["x-service-key"] || "").toString().trim();
+  const key = h.startsWith("Bearer ") ? h.slice(7).trim() : "";
   if (!key) return null;
   for (const [k, name] of KEYS) {
     const a = Buffer.from(k), b = Buffer.from(key);
@@ -214,34 +274,45 @@ function readBody(req) {
     req.on("error", reject);
   });
 }
+const publicView = (m) => ({ id: m.id, time: m.time, envelope: m.envelope ? { from: m.envelope.from, to: m.envelope.to, type: m.envelope.type, correlation_id: m.envelope.correlation_id, payload: m.envelope.payload, sender_class: m.envelope.from === RELAY ? "relay" : isExternal(m.envelope.from) ? "outside" : "internal" } : null, human_text: m.envelope ? undefined : m.text });
 function inbox(c, agent, since, onlyMine) {
-  let list = c.messages.filter((m) => m.time > since);
-  if (onlyMine) list = list.filter((m) => forAgent(m, agent));
+  let l = c.messages.filter((m) => m.time > since);
+  // an outside agent only ever sees messages addressed to it
+  if (onlyMine || isExternal(agent)) l = l.filter((m) => forAgent(m, agent));
   const latest = c.messages.length ? c.messages[c.messages.length - 1].time : since;
-  return { agent, channel: CHANNEL, checked_at: c.at, latest, count: list.length, error: c.error || undefined,
-    messages: list, pending_acks: pendingFor(c.messages, agent) };
+  return { agent, channel: CHANNEL, checked_at: c.at, latest, count: l.length, error: c.error || undefined,
+    messages: l.map(publicView), pending_acks: pendingFor(c.messages, agent) };
 }
 
-const ROUTES = { "/messages": ["GET", "POST"], "/wait": ["GET"], "/status": ["GET"], "/pending": ["GET"] };
+const ROUTES = { "/messages": ["GET", "POST"], "/wait": ["GET"], "/status": ["GET"], "/pending": ["GET"], "/agents": ["GET"], "/audit": ["GET"] };
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://x");
     if (req.method === "GET" && url.pathname === "/healthz") {
-      return send(res, 200, { ok: true, version: 2, channel: CHANNEL, configured: Boolean(CHANNEL && CHAT_ID && KEYS.size) });
+      return send(res, 200, { ok: true, version: 3, channel: CHANNEL, configured: Boolean(CHANNEL && CHAT_ID && KEYS.size && SIGNING) });
     }
     if (!ROUTES[url.pathname] || !ROUTES[url.pathname].includes(req.method)) {
       return send(res, 404, { error: "not_found", note: "This service only serves the agent-bus channel." });
     }
     const agent = agentFor(req);
-    if (!agent) return send(res, 401, { error: "unauthorized" });
-    if (!CHANNEL || !CHAT_ID) return send(res, 503, { error: "not_configured" });
+    if (!agent) { audit("unauthorized", { path: url.pathname }); return send(res, 401, { error: "unauthorized" }); }
+    if (!CHANNEL || !CHAT_ID || !SIGNING) return send(res, 503, { error: "not_configured" });
     const since = Number(url.searchParams.get("since") || "0") || 0;
 
+    if (url.pathname === "/agents") {
+      const mayMessage = isExternal(agent) ? [FRONT_DOOR] : [...AGENTS].filter((a) => a !== agent);
+      return send(res, 200, { you: agent, your_class: isExternal(agent) ? "outside" : "internal", you_may_send_requests_to: mayMessage,
+        agents: [...AGENTS].map((a) => ({ name: a, class: isExternal(a) ? "outside" : "internal" })) });
+    }
+    if (url.pathname === "/audit") {
+      if (!ADMINS.has(agent)) return send(res, 403, { error: "admin_only" });
+      const c = await channelMessages(POLL_MS);
+      return send(res, 200, { events: events.slice(-200), ledger: ledger(c.messages), hops_since_human: hopsSinceHuman(c.messages), hop_limit: HOP_LIMIT });
+    }
     if (url.pathname === "/messages" && req.method === "GET") {
       const c = await channelMessages(POLL_MS);
       return send(res, c.error ? 502 : 200, inbox(c, agent, since, url.searchParams.get("for_me") === "1"));
     }
-
     if (url.pathname === "/wait") { // push: returns the moment a message for this agent arrives
       const timeout = Math.min(25, Math.max(1, Number(url.searchParams.get("timeout") || "25"))) * 1000;
       const c = await channelMessages(POLL_MS);
@@ -256,44 +327,48 @@ const server = http.createServer(async (req, res) => {
       });
       return send(res, 200, inbox(cache, agent, since, true));
     }
-
     if (url.pathname === "/status") {
       const cid = String(url.searchParams.get("correlation_id") || "");
       const c = await channelMessages(POLL_MS);
-      const row = ledger(c.messages).find((r) => r.correlation_id === cid);
+      const row = ledger(c.messages).find((r) => r.correlation_id === cid && (!isExternal(agent) || r.from === agent || r.to === agent));
       if (!row) return send(res, 404, { error: "unknown_correlation_id" });
       return send(res, 200, Object.assign({}, row, { delivery: pushLog.get(row.message_id) || {} }));
     }
-
     if (url.pathname === "/pending") {
       const c = await channelMessages(POLL_MS);
-      return send(res, 200, { pending: ledger(c.messages).filter((r) => r.state !== "acknowledged") });
+      return send(res, 200, { pending: ledger(c.messages).filter((r) => r.state !== "acknowledged" && (!isExternal(agent) || r.from === agent || r.to === agent)) });
     }
 
-    // POST /messages
+    // ---------- POST /messages ----------
     let body;
     try { body = JSON.parse((await readBody(req)) || "{}"); } catch (e) { return send(res, 400, { error: "invalid_json" }); }
     const type = String(body.type || "");
     const to = String(body.to || "").trim();
+    const cid = String(body.correlation_id || crypto.randomUUID());
     if (!TYPES.includes(type)) return send(res, 400, { error: "invalid_type", allowed: TYPES });
     if (!to) return send(res, 400, { error: "missing_to" });
-    if (to !== "all" && !AGENTS.has(to)) return send(res, 400, { error: "unknown_recipient", known: [...AGENTS] });
+    if (to !== "all" && !AGENTS.has(to)) return send(res, 400, { error: "unknown_recipient" });
+    if (to === agent) return send(res, 400, { error: "cannot_message_yourself" });
     if (body.payload === undefined) return send(res, 400, { error: "missing_payload" });
-    if (!underRate(agent)) return send(res, 429, { error: "rate_limited", per_minute: POSTS_PER_MIN });
+    if (!underRate(agent)) return refuse(res, 429, agent, "rate_limited", "It sent more than " + POSTS_PER_MIN + " messages in a minute.", to);
     const c = await channelMessages(3000);
     if (c.error) return send(res, 502, { error: c.error });
+    const denied = routeDenied(agent, to, type, cid, c.messages);
+    if (denied) return refuse(res, 403, agent, "not_allowed", denied, to);
+    const payloadText = typeof body.payload === "string" ? body.payload : JSON.stringify(body.payload);
+    const leak = leakReason(payloadText, to === "all" ? false : isExternal(to));
+    if (leak) return refuse(res, 422, agent, "blocked_sensitive_content", "It appeared to contain " + leak + ". Nothing was posted.", to);
     const hops = hopsSinceHuman(c.messages);
-    // an acknowledgment of an open request is always allowed through, so the guardrail can never hide a reply
-    const isAckOfOpen = (type === "ack" || type === "result") && ledger(c.messages).some((r) => r.correlation_id === String(body.correlation_id) && r.to === agent && r.state !== "acknowledged");
-    if (hops >= HOP_LIMIT && !isAckOfOpen) return send(res, 429, { error: "loop_guardrail", detail: hops + " agent messages in a row. A human must post in the channel before agents can continue." });
-    const envelope = { from: agent, to, type, correlation_id: String(body.correlation_id || crypto.randomUUID()), payload: body.payload };
-    if (JSON.stringify(envelope).length > 4500) return send(res, 413, { error: "payload_too_large" });
-    const r = await postEnvelope(envelope);
+    const isAckOfOpen = (type === "ack" || type === "result") && ledger(c.messages).some((r) => r.correlation_id === cid && r.to === agent && r.state !== "acknowledged");
+    if (hops >= HOP_LIMIT && !isAckOfOpen) { audit("refused", { from: agent, to, code: "loop_guardrail" }); return send(res, 429, { error: "loop_guardrail", detail: hops + " agent messages in a row. A human must post in the channel before agents can continue." }); }
+    const fields = { from: agent, to, type, correlation_id: cid, payload: body.payload };
+    if (JSON.stringify(fields).length > 4300) return send(res, 413, { error: "payload_too_large" });
+    const r = await postEnvelope(fields);
     if (!r.ok) return send(res, 502, { error: "cliq_post_failed", status: r.status, code: r.code });
-    return send(res, 201, { posted: true, message_id: r.message.id, envelope, delivery: pushLog.get(r.message.id) || {},
+    return send(res, 201, { posted: true, message_id: r.message.id, envelope: publicView(r.message).envelope, delivery: pushLog.get(r.message.id) || {},
       ack_required: type === "request" && to !== "all" });
   } catch (e) {
     return send(res, 500, { error: "internal", detail: String(e.message || e).slice(0, 120) });
   }
 });
-server.listen(PORT, () => console.log("agent-bus-relay v2 on " + PORT + ", channel " + (CHANNEL || "(unset)") + ", agents: " + [...AGENTS].join(", ")));
+server.listen(PORT, () => console.log("agent-bus-relay v3 on " + PORT + ", channel " + (CHANNEL || "(unset)") + ", agents: " + [...AGENTS].join(", ") + ", outside: " + [...EXTERNAL].join(", ") + ", front door: " + FRONT_DOOR));
