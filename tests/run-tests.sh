@@ -142,8 +142,9 @@ python3 admin/bus-admin.py shutdown </dev/null >/dev/null 2>&1
 c="200"; for i in $(seq 1 12); do c="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "$B/healthz")"; [ "$c" != "200" ] && break; sleep 5; done
 [ "$c" != "200" ] && ok "shutdown takes the whole relay offline (HTTP $c)" || bad "shutdown takes the whole relay offline" "still answering"
 python3 admin/bus-admin.py resume </dev/null >/dev/null 2>&1
-c="000"; for i in $(seq 1 36); do c="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "$B/healthz")"; [ "$c" = "200" ] && break; sleep 5; done
-check "resume brings the relay back" "$c" "200"
+t0=$(date +%s); good=0; for i in $(seq 1 70); do c="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' "$B/healthz")"; if [ "$c" = "200" ]; then good=$((good+1)); else good=0; fi; [ "$good" -ge 4 ] && break; sleep 5; done
+[ "$good" -ge 4 ] && ok "resume brings the relay back and it stays up (steady after $(( $(date +%s) - t0 ))s)" || bad "resume brings the relay back and it stays up" "last HTTP $c"
+sleep 20; body='{"to":"claude-compliance","type":"alert","payload":"Relay is back after the shut-off test."}'; code="$(post "$KO" "$body")"; check "after resume the bus carries messages again" "$code" "201"
 fi
 
 if [ "$MODE" = "escalation" ]; then

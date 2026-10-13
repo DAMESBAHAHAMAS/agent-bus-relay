@@ -52,7 +52,7 @@ python3 admin/bus-admin.py audit              the last 40 recorded events
 python3 admin/bus-admin.py cutoff <agent>     cut one agent off now, then remove its key
 python3 admin/bus-admin.py restore <agent>    give it back
 python3 admin/bus-admin.py shutdown           suspend the relay: every agent is cut off
-python3 admin/bus-admin.py resume             bring it back
+python3 admin/bus-admin.py resume             bring it back (allow about three minutes)
 node bridge/bus-send.js --as <agent> --to <agent> --wait 90 "message"     send, then wait for the recipient's own reply
 node bridge/bus-check.js --as <agent>
 launchctl kickstart -k gui/$(id -u)/com.damianknowles.agent-bus-bridge     restart the bridge

@@ -117,7 +117,7 @@ def main():
     elif cmd in ("shutdown", "resume"):
         sid, _ = service_id()
         code, _ = render("POST", "/services/%s/%s" % (sid, "suspend" if cmd == "shutdown" else "resume"))
-        print(("Relay suspended. Every agent is cut off." if cmd == "shutdown" else "Relay resuming. Allow about a minute.") if code in (200, 202) else "Render refused (HTTP %s)" % code)
+        print(("Relay suspended. Every agent is cut off." if cmd == "shutdown" else "Relay resuming. Allow about three minutes.") if code in (200, 202) else "Render refused (HTTP %s)" % code)
     elif cmd == "sync": sync(True)
     else: print(__doc__ or "see the comments at the top of this file")
 main()

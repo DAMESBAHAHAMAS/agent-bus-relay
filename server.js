@@ -431,4 +431,4 @@ const server = http.createServer(async (req, res) => {
     return send(res, 500, { error: "internal", detail: String(e.message || e).slice(0, 120) });
   }
 });
-server.listen(PORT, () => console.log("agent-bus-relay v3 on " + PORT + ", channel " + (CHANNEL || "(unset)") + ", agents: " + [...AGENTS].join(", ") + ", outside: " + [...EXTERNAL].join(", ") + ", front door: " + FRONT_DOOR));
+server.listen(PORT, () => console.log("agent-bus-relay v5 on " + PORT + ", channel " + (CHANNEL || "(unset)") + ", agents: " + [...AGENTS].join(", ") + ", outside: " + [...EXTERNAL].join(", ") + ", front door: " + FRONT_DOOR));
