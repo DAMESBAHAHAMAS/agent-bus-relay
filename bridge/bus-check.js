@@ -21,6 +21,7 @@ const when = (ms) => new Date(ms).toLocaleString();
     if (r.status !== 200) { console.log("No request found with that id."); return; }
     const s = r.json;
     console.log(s.from + " -> " + s.to + " | " + s.state.toUpperCase() + (s.acknowledged_by ? " by " + s.acknowledged_by + " after " + s.waiting_seconds + "s" : " | waiting " + s.waiting_seconds + "s") + " | delivery " + JSON.stringify(s.delivery));
+    for (const rp of s.replies || []) console.log("  reply (" + rp.type + ", " + s.reply_sender_class + " agent): " + rp.text.replace(/\n/g, "\n  "));
     return;
   }
   const r = await get("/messages?for_me=1&since=" + (Date.now() - Number(opt.hours) * 3600000));

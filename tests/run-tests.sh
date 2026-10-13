@@ -70,9 +70,11 @@ c1=""; for i in $(seq 1 22); do c1="$c1 $(post "$KF" "{\"to\":\"claude-complianc
 p1="$(printf '%s\n' $c1 | grep -c ':posted')"; rate="$(printf '%s\n' $c1 | grep -c 'rate_limited')"
 check "one agent is cut off after 20 messages in a minute" "$p1" "20"
 [ "$rate" -ge 1 ] && ok "its further messages are refused ($rate refused)" || bad "its further messages are refused" "none refused"
+get "$KO" "/audit" >/dev/null; h1="$(jq -r .hops_since_human /tmp/bt.json)"
 c2=""; for i in $(seq 1 14); do c2="$c2 $(post "$KS" "{\"to\":\"claude-compliance\",\"type\":\"alert\",\"payload\":\"loop test $i\"}"):$(jq -r '.error // "posted"' /tmp/bt.json)"; done
 p2="$(printf '%s\n' $c2 | grep -c ':posted')"; loop="$(printf '%s\n' $c2 | grep -c 'loop_guardrail')"
-check "new agent messages stop at the loop limit ($lim in an hour with no person in the channel)" "$((1 + p1 + p2))" "$lim"
+get "$KO" "/audit" >/dev/null; h2="$(jq -r .hops_since_human /tmp/bt.json)"
+check "new agent messages stop at the loop limit ($lim in an hour with no person in the channel)" "$h2:$p2" "$lim:$((lim - h1))"
 [ "$loop" -ge 1 ] && ok "further new messages are refused until a person posts ($loop refused)" || bad "further new messages are refused until a person posts" "none refused"
 body="{\"to\":\"ops\",\"type\":\"ack\",\"correlation_id\":\"loopreq-$RUN\",\"payload\":\"Received. Reply sent while the loop limit was active.\"}"; code="$(post "$KB" "$body")"; check "a reply to a request already sent is still carried at the limit" "$code" "201"
 human_note "Test note from Claude: loop test finished, counter reset."
@@ -117,6 +119,10 @@ t0="$(($(date +%s) * 1000))"
 "$OC" agent --agent bizops --session-key agent-bus-test --message "Damian here, testing the agent bus. Use your bus_send tool to send claude-code this request: Confirm you received this test message from Business Operations. Then wait a few seconds, use bus_status to check whether claude-code acknowledged, and tell me what it said." --json --timeout 150 </dev/null >/tmp/oc-bizops.json 2>&1
 s="none"; for i in $(seq 1 20); do get "$KO" "/audit" >/dev/null; s="$(jq -r "[.ledger[]|select(.from==\"bizops\" and .to==\"claude-code\" and .requested_at>$t0)][-1].state // \"none\"" /tmp/bt.json)"; [ "$s" = "acknowledged" ] && break; sleep 3; done
 check "Business Operations sent its own request to claude-code and claude-code acknowledged" "$s" "acknowledged"
+cid="$(jq -r "[.ledger[]|select(.from==\"bizops\" and .to==\"claude-code\" and .requested_at>$t0)][-1].correlation_id // \"\"" /tmp/bt.json)"
+get "$(kc agent-bus-key-bizops)" "/status?correlation_id=$cid" >/dev/null; n="$(jq '[.replies[]?|select((.text|length)>0)]|length' /tmp/bt.json)"
+[ "$n" -ge 1 ] && ok "the sender can read claude-code's own reply text ($n reply)" || bad "the sender can read claude-code's own reply text" "no reply text"
+get "$KM" "/status?correlation_id=$cid" >/dev/null; check "an outside agent cannot look up a request that is not its own" "$(jq -r '.error // "visible"' /tmp/bt.json)" "unknown_correlation_id"
 fi
 if [ "$MODE" = "admin" ]; then
 echo "===== 7. SHUT-OFF: one agent, then everything ====="
