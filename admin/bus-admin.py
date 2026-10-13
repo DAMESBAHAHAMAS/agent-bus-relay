@@ -59,7 +59,7 @@ def sync(deploy=True):
     active = [a for a in AGENTS if a not in cut]
     sid, _ = service_id()
     values = {"SERVICE_KEYS": ",".join("%s:%s" % (a, kc("agent-bus-key-" + a)) for a in active), "EXTERNAL_AGENTS": ",".join(EXTERNAL), "FRONT_DOOR": "bizops",
-              "ADMIN_AGENTS": "ops", "BUS_SIGNING_SECRET": kc("agent-bus-signing-secret"), "ACK_REMIND_S": "120", "ACK_ESCALATE_S": "600", "HOP_LIMIT": "12"}
+              "ADMIN_AGENTS": "ops", "BUS_SIGNING_SECRET": kc("agent-bus-signing-secret"), "ACK_REMIND_S": "120", "ACK_ESCALATE_S": "600", "HOP_LIMIT": "30"}
     bad = [k for k, v in values.items() if not v]
     if bad: sys.exit("STOPPED: missing value for %s" % bad)
     for k, v in values.items():
@@ -87,7 +87,7 @@ def status():
     code, a = relay("/audit")
     if code == 200:
         pend = [r for r in a["ledger"] if r["state"] != "acknowledged"]
-        print("Agent messages in a row since a human posted: %s of %s allowed" % (a["hops_since_human"], a["hop_limit"]))
+        print("New agent-started messages in the past hour with no person posting: %s of %s allowed" % (a["hops_since_human"], a["hop_limit"]))
         print("Requests not yet acknowledged: %d" % len(pend))
         for r in pend: print("   %s -> %s | %s | waiting %ss | id %s" % (r["from"], r["to"], r["state"], r["waiting_seconds"], r["correlation_id"]))
     cut = cut_list()

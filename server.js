@@ -24,7 +24,8 @@ const CHANNEL = env("CHANNEL_UNIQUE_NAME", "");
 const CHAT_ID = env("CHANNEL_CHAT_ID", "");
 const BOT = env("BOT_UNIQUE_NAME", "");
 const SIGNING = env("BUS_SIGNING_SECRET", "");
-const HOP_LIMIT = Number(env("HOP_LIMIT", "6"));
+const HOP_LIMIT = Number(env("HOP_LIMIT", "30"));
+const LOOP_WINDOW_MS = Number(env("LOOP_WINDOW_MIN", "60")) * 60000;
 const POLL_MS = Math.max(5000, Number(env("POLL_MS", "10000")));
 const POSTS_PER_MIN = Number(env("POSTS_PER_MIN", "20"));
 const ACK_REMIND_MS = Number(env("ACK_REMIND_S", "120")) * 1000;
@@ -139,11 +140,14 @@ async function channelMessages(maxAgeMs) {
 // ---------- loop guardrail: agent messages in a row since the last human message ----------
 // Acknowledgments and relay notices do not count, because they cannot start a loop.
 function hopsSinceHuman(messages) {
+  // New agent-started messages (requests and alerts) since a person last posted, within the rolling window.
+  // Replies (ack, result) never count: they wake nobody, so they cannot feed a loop.
   let n = 0;
+  const floor = Date.now() - LOOP_WINDOW_MS;
   for (let i = messages.length - 1; i >= 0; i--) {
     const e = messages[i].envelope;
-    if (!e) break;
-    if (e.from !== RELAY && e.type !== "ack") n++;
+    if (!e || messages[i].time < floor) break;
+    if (e.from !== RELAY && (e.type === "request" || e.type === "alert")) n++;
   }
   return n;
 }
@@ -359,8 +363,9 @@ const server = http.createServer(async (req, res) => {
     const leak = leakReason(payloadText, to === "all" ? false : isExternal(to));
     if (leak) return refuse(res, 422, agent, "blocked_sensitive_content", "It appeared to contain " + leak + ". Nothing was posted.", to);
     const hops = hopsSinceHuman(c.messages);
-    const isAckOfOpen = (type === "ack" || type === "result") && ledger(c.messages).some((r) => r.correlation_id === cid && r.to === agent && r.state !== "acknowledged");
-    if (hops >= HOP_LIMIT && !isAckOfOpen) { audit("refused", { from: agent, to, code: "loop_guardrail" }); return send(res, 429, { error: "loop_guardrail", detail: hops + " agent messages in a row. A human must post in the channel before agents can continue." }); }
+    if ((type === "request" || type === "alert") && hops >= HOP_LIMIT) {
+      return refuse(res, 429, agent, "loop_guardrail", "Agents have started " + hops + " new messages in the past " + Math.round(LOOP_WINDOW_MS / 60000) + " minutes with no person in the channel. New requests are paused until Damian posts in the channel or the window rolls over. Replies to requests already sent are still carried.", to);
+    }
     const fields = { from: agent, to, type, correlation_id: cid, payload: body.payload };
     if (JSON.stringify(fields).length > 4300) return send(res, 413, { error: "payload_too_large" });
     const r = await postEnvelope(fields);

@@ -60,16 +60,22 @@ echo "===== 7. AUDIT: refusals are recorded and visible ====="
 get "$KO" "/audit" >/dev/null; n="$(jq '[.events[]|select(.kind=="refused")]|length' /tmp/bt.json)"; [ "$n" -ge 5 ] && ok "refused attempts are in the audit trail ($n recorded)" || bad "refused attempts are in the audit trail" "only $n recorded"
 get "$KO" "/messages?since=0" >/dev/null; n="$(jq '[.messages[]|select(.envelope and .envelope.from=="relay" and (.envelope.payload|tostring|startswith("REFUSED")))]|length' /tmp/bt.json)"; [ "$n" -ge 1 ] && ok "refusals are posted in the channel where Damian can see them ($n visible)" || bad "refusals are posted in the channel" "none visible"
 
-echo "===== 6. LOOPS AND COST: the hop limit and the rate limit ====="
+echo "===== 6. LOOPS AND COST: the rate limit and the loop limit ====="
 human_note "Test note from Claude: resetting the loop counter before the loop test."
-codes=""; for i in $(seq 1 24); do codes="$codes $(post "$KO" "{\"to\":\"claude-compliance\",\"type\":\"alert\",\"payload\":\"loop test $i\"}"):$(jq -r '.error // "posted"' /tmp/bt.json)"; done
-posted="$(printf '%s\n' $codes | grep -c ':posted')"; loop="$(printf '%s\n' $codes | grep -c 'loop_guardrail')"; rate="$(printf '%s\n' $codes | grep -c 'rate_limited')"
+KF="$(kc agent-bus-key-claude-finance)"; KS="$(kc agent-bus-key-claude-systems)"; KB="$(kc agent-bus-key-claude-bizops)"
 get "$KO" "/audit" >/dev/null; lim="$(jq -r .hop_limit /tmp/bt.json)"
-check "agent messages stop at the hop limit ($lim)" "$posted" "$lim"
-[ "$loop" -ge 1 ] && ok "further messages are refused until a human posts ($loop refused)" || bad "further messages are refused until a human posts" "none refused"
-[ "$rate" -ge 1 ] && ok "the per-agent rate limit cuts in after 20 a minute ($rate refused)" || bad "the per-agent rate limit cuts in" "not triggered"
+post "$KO" "{\"to\":\"claude-bizops\",\"type\":\"request\",\"correlation_id\":\"loopreq-$RUN\",\"payload\":\"Loop test: an open request to reply to later.\"}" >/dev/null
+c1=""; for i in $(seq 1 22); do c1="$c1 $(post "$KF" "{\"to\":\"claude-compliance\",\"type\":\"alert\",\"payload\":\"rate test $i\"}"):$(jq -r '.error // "posted"' /tmp/bt.json)"; done
+p1="$(printf '%s\n' $c1 | grep -c ':posted')"; rate="$(printf '%s\n' $c1 | grep -c 'rate_limited')"
+check "one agent is cut off after 20 messages in a minute" "$p1" "20"
+[ "$rate" -ge 1 ] && ok "its further messages are refused ($rate refused)" || bad "its further messages are refused" "none refused"
+c2=""; for i in $(seq 1 14); do c2="$c2 $(post "$KS" "{\"to\":\"claude-compliance\",\"type\":\"alert\",\"payload\":\"loop test $i\"}"):$(jq -r '.error // "posted"' /tmp/bt.json)"; done
+p2="$(printf '%s\n' $c2 | grep -c ':posted')"; loop="$(printf '%s\n' $c2 | grep -c 'loop_guardrail')"
+check "new agent messages stop at the loop limit ($lim in an hour with no person in the channel)" "$((1 + p1 + p2))" "$lim"
+[ "$loop" -ge 1 ] && ok "further new messages are refused until a person posts ($loop refused)" || bad "further new messages are refused until a person posts" "none refused"
+check "a reply to a request already sent is still carried at the limit" "$(post "$KB" "{\"to\":\"ops\",\"type\":\"ack\",\"correlation_id\":\"loopreq-$RUN\",\"payload\":\"Received. Reply sent while the loop limit was active.\"}")" "201"
 human_note "Test note from Claude: loop test finished, counter reset."
-check "after a human posts, agents can continue" "$(post "$(kc agent-bus-key-claude-systems)" '{"to":"claude-compliance","type":"alert","payload":"post after human reset"}')" "201"
+check "after a person posts, agents can continue" "$(post "$KS" '{"to":"claude-compliance","type":"alert","payload":"post after human reset"}')" "201"
 fi
 
 if [ "$MODE" = "agents" ] || [ "$MODE" = "all" ]; then
