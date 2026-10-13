@@ -98,13 +98,13 @@ async function channelMessages(maxAgeMs) {
   return inflight;
 }
 
-// ---- loop guardrail: agent messages in a row since the last human message (relay notices do not count) ----
+// ---- loop guardrail: agent messages in a row since the last human message (acknowledgments and relay notices do not count) ----
 function hopsSinceHuman(messages) {
   let n = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
     const e = messages[i].envelope;
     if (!e) break;
-    if (e.from !== RELAY) n++;
+    if (e.from !== RELAY && e.type !== "ack") n++; // acknowledgments cannot start a loop
   }
   return n;
 }
