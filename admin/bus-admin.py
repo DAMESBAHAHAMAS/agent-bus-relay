@@ -38,8 +38,8 @@ def http(method, url, headers, body=None, timeout=60):
         return 0, {"error": str(e)[:120]}
 def render(method, path, body=None):
     return http(method, "https://api.render.com/v1" + path, {"Authorization": "Bearer " + kc("render-api-key")}, body)
-def relay(path):
-    return http("GET", BASE + path, {"Authorization": "Bearer " + kc("agent-bus-key-ops")}, None, 30)
+def relay(path, method="GET"):
+    return http(method, BASE + path, {"Authorization": "Bearer " + kc("agent-bus-key-ops")}, None, 30)
 def service_id():
     code, found = render("GET", "/services?name=%s&limit=5" % SERVICE)
     return found[0]["service"]["id"], found[0]["service"]
@@ -59,7 +59,8 @@ def sync(deploy=True):
     active = [a for a in AGENTS if a not in cut]
     sid, _ = service_id()
     values = {"SERVICE_KEYS": ",".join("%s:%s" % (a, kc("agent-bus-key-" + a)) for a in active), "EXTERNAL_AGENTS": ",".join(EXTERNAL), "FRONT_DOOR": "bizops",
-              "ADMIN_AGENTS": "ops", "BUS_SIGNING_SECRET": kc("agent-bus-signing-secret"), "ACK_REMIND_S": "120", "ACK_ESCALATE_S": "600", "HOP_LIMIT": "30"}
+              "ADMIN_AGENTS": "ops", "BUS_SIGNING_SECRET": kc("agent-bus-signing-secret"), "ACK_REMIND_S": "120", "ACK_ESCALATE_S": "600", "HOP_LIMIT": "30",
+              "ALERT_BOT": "agentbus", "ALERT_USER_IDS": kc("agent-bus-alert-user-ids")}
     bad = [k for k, v in values.items() if not v]
     if bad: sys.exit("STOPPED: missing value for %s" % bad)
     for k, v in values.items():
@@ -109,6 +110,9 @@ def main():
         if arg not in AGENTS: sys.exit("Name one of: " + ", ".join(AGENTS))
         cut = cut_list()
         cut = [a for a in cut if a != arg] + ([arg] if cmd == "cutoff" else [])
+        # Step 1 takes effect at once on the running relay. Step 2 removes or restores the key itself, which survives restarts.
+        code, r = relay("/admin/%s?agent=%s" % (cmd, arg), "POST")
+        print(("%s is cut off now." % arg if cmd == "cutoff" else "%s is restored on the running relay." % arg) if code == 200 else ("The running relay did not confirm (HTTP %s). Continuing with the key change." % code if cmd == "cutoff" else "Restoring the key."))
         save_cut(cut); sync(True)
     elif cmd in ("shutdown", "resume"):
         sid, _ = service_id()

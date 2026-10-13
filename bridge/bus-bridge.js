@@ -122,7 +122,15 @@ async function handle(agent, key, env) {
   log(agent, "woken by", env.sender_class, "agent", env.from, "id", cid);
   try {
     const result = await WAKE[KINDS[agent]](agent, frame(agent, env), env);
-    if (!result.ok) { log(agent, "produced no reply for", cid, "(" + result.status + "). No acknowledgment sent."); return; }
+    if (!result.ok) {
+      log(agent, "produced no reply for", cid, "(" + result.status + "). No acknowledgment sent.");
+      // After the last attempt, say so on the bus. This is an alert, never an acknowledgment, so the request stays open.
+      if ((attempts.get(cid) || 0) >= MAX_ATTEMPTS) {
+        await api(key, "POST", "/messages", { to: env.from, type: "alert", correlation_id: cid,
+          payload: "WAKE FAILED: " + agent + " could not be woken (" + result.status + "). This notice is from the Mac bridge, not from " + agent + ". The request is still unacknowledged." }).catch(() => {});
+      }
+      return;
+    }
     const type = /STATUS:\s*(COMPLETE|BLOCKED)/i.test(result.text) ? "result" : "ack";
     let r = await api(key, "POST", "/messages", { to: env.from, type, correlation_id: cid, payload: result.text.slice(0, 3500) });
     if (r.status === 422) { // the agent did reply, but the relay withheld the content

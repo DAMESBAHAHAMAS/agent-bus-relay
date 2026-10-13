@@ -23,6 +23,8 @@ const CLIQ = env("CLIQ_API_BASE", "https://cliq.zoho.com/api/v2");
 const CHANNEL = env("CHANNEL_UNIQUE_NAME", "");
 const CHAT_ID = env("CHANNEL_CHAT_ID", "");
 const BOT = env("BOT_UNIQUE_NAME", "");
+const ALERT_BOT = env("ALERT_BOT", "");            // bot that messages Damian directly, so his phone is notified
+const ALERT_USER_IDS = env("ALERT_USER_IDS", "");  // his Cliq user id
 const SIGNING = env("BUS_SIGNING_SECRET", "");
 const HOP_LIMIT = Number(env("HOP_LIMIT", "30"));
 const LOOP_WINDOW_MS = Number(env("LOOP_WINDOW_MIN", "60")) * 60000;
@@ -209,8 +211,30 @@ async function postEnvelope(fields) {
   cache.messages.push(m);
   lastNotified = Math.max(lastNotified, m.time);
   notify(m);
+  // A recipient with no listener cannot be woken. Tell Damian at once rather than let the request sit.
+  if (envelope.type === "request" && envelope.from !== RELAY && envelope.to !== "all" && process.uptime() > 60 && Date.now() - (lastSeen.get(envelope.to) || 0) > 120000) {
+    notifyHuman("manual", envelope.to + " has a new request from " + envelope.from + " and is not listening, so it cannot be woken automatically. Open " + envelope.to + " and tell it to check the agent bus. Request ID " + envelope.correlation_id + ".");
+  }
   audit("posted", { from: envelope.from, to: envelope.to, type: envelope.type, correlation_id: envelope.correlation_id });
   return { ok: true, message: m };
+}
+
+// ---------- direct alerts to Damian through the Agent Bus bot (his own posts in the channel do not notify him) ----------
+const humanLog = { urgent: [], security: [], manual: [] };
+const lastSeen = new Map();   // agent -> last time it listened or checked
+let loopPauseNotifiedAt = 0;
+async function notifyHuman(kind, text) {
+  if (!ALERT_BOT || !ALERT_USER_IDS) return;
+  const now = Date.now();
+  const cap = kind === "security" ? 3 : 10;
+  const l = (humanLog[kind] = humanLog[kind].filter((t) => now - t < 3600000));
+  if (l.length >= cap) return;
+  l.push(now);
+  const suffix = l.length === cap ? " (Further alerts of this kind are held for an hour. The full record is in #agent-bus.)" : "";
+  try {
+    const r = await cliq("POST", "/bots/" + encodeURIComponent(ALERT_BOT) + "/message", { text: text + suffix, userids: ALERT_USER_IDS });
+    audit("human_alert", { alert: kind, status: r.status });
+  } catch (e) { audit("human_alert_failed", { alert: kind }); }
 }
 
 // A refusal is reported in the channel so Damian sees it. Limited so a misbehaving agent cannot flood the channel.
@@ -222,6 +246,13 @@ async function refuse(res, status, agent, code, detail, to) {
   if (recent.length < 5 && CHANNEL && CHAT_ID && SIGNING) {
     recent.push(now); refusalLog.set(agent, recent);
     try { await postEnvelope({ from: RELAY, to: agent, type: "alert", correlation_id: "refused-" + crypto.randomUUID().slice(0, 8), payload: "REFUSED: a message from " + agent + (to ? " to " + to : "") + " was not carried. " + detail }); } catch (e) {}
+  }
+  if (code === "loop_guardrail") {
+    if (now - loopPauseNotifiedAt > 1800000) { loopPauseNotifiedAt = now; notifyHuman("urgent", "Agent bus paused. " + detail + " To let agents continue now, post any message in #agent-bus."); }
+  } else if (isExternal(agent) && code === "not_allowed") {
+    notifyHuman("security", "Agent bus refused an outside agent. " + agent + " tried to send to " + (to || "?") + ". " + detail);
+  } else if (code === "blocked_sensitive_content" && to && to !== "all" && isExternal(to)) {
+    notifyHuman("security", "Agent bus blocked sensitive content. " + agent + " tried to send " + to + " a message. " + detail);
   }
   return send(res, status, { error: code, detail });
 }
@@ -242,6 +273,7 @@ async function watchdog() {
         escalating.add(r.correlation_id);
         await postEnvelope({ from: RELAY, to: r.from, type: "alert", correlation_id: r.correlation_id,
           payload: "NO ACKNOWLEDGMENT: " + r.to + " has not acknowledged the request from " + r.from + " after " + Math.round(age / 60000) + " minutes." });
+        notifyHuman("urgent", "No acknowledgment. " + r.to + " has not acknowledged a request from " + r.from + " after " + Math.round(age / 60000) + " minutes. Request ID " + r.correlation_id + ".");
       }
     }
   } catch (e) {}
@@ -288,18 +320,33 @@ function inbox(c, agent, since, onlyMine) {
     messages: l.map(publicView), pending_acks: pendingFor(c.messages, agent) };
 }
 
-const ROUTES = { "/messages": ["GET", "POST"], "/wait": ["GET"], "/status": ["GET"], "/pending": ["GET"], "/agents": ["GET"], "/audit": ["GET"] };
+const ROUTES = { "/messages": ["GET", "POST"], "/wait": ["GET"], "/status": ["GET"], "/pending": ["GET"], "/agents": ["GET"], "/audit": ["GET"] , "/admin/cutoff": ["POST"], "/admin/restore": ["POST"] };
+const blocked = new Set();   // agents cut off by the admin console; takes effect at once
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://x");
     if (req.method === "GET" && url.pathname === "/healthz") {
-      return send(res, 200, { ok: true, version: 3, channel: CHANNEL, configured: Boolean(CHANNEL && CHAT_ID && KEYS.size && SIGNING) });
+      return send(res, 200, { ok: true, version: 4, channel: CHANNEL, configured: Boolean(CHANNEL && CHAT_ID && KEYS.size && SIGNING) });
     }
     if (!ROUTES[url.pathname] || !ROUTES[url.pathname].includes(req.method)) {
       return send(res, 404, { error: "not_found", note: "This service only serves the agent-bus channel." });
     }
     const agent = agentFor(req);
     if (!agent) { audit("unauthorized", { path: url.pathname }); return send(res, 401, { error: "unauthorized" }); }
+    if (blocked.has(agent)) { audit("cut_off_agent_refused", { agent, path: url.pathname }); return send(res, 401, { error: "cut_off" }); }
+    if (url.pathname === "/admin/cutoff" || url.pathname === "/admin/restore") {
+      if (!ADMINS.has(agent)) return send(res, 403, { error: "admin_only" });
+      const target = String(url.searchParams.get("agent") || "");
+      if (!AGENTS.has(target) && !blocked.has(target)) return send(res, 400, { error: "unknown_agent" });
+      if (ADMINS.has(target)) return send(res, 400, { error: "cannot_cut_off_admin" });
+      if (url.pathname === "/admin/cutoff") {
+        blocked.add(target);
+        const set = waiters.get(target); if (set) for (const fn of [...set]) fn();   // drop its open listeners
+      } else blocked.delete(target);
+      audit(url.pathname === "/admin/cutoff" ? "cut_off" : "restored", { agent: target, by: agent });
+      return send(res, 200, { ok: true, cut_off: [...blocked] });
+    }
+    if (req.method === "GET" && (url.pathname === "/wait" || url.pathname === "/messages")) lastSeen.set(agent, Date.now());
     if (!CHANNEL || !CHAT_ID || !SIGNING) return send(res, 503, { error: "not_configured" });
     const since = Number(url.searchParams.get("since") || "0") || 0;
 
@@ -329,6 +376,7 @@ const server = http.createServer(async (req, res) => {
         set.add(done);
         req.on("close", done);
       });
+      if (blocked.has(agent)) return send(res, 401, { error: "cut_off" });
       return send(res, 200, inbox(cache, agent, since, true));
     }
     if (url.pathname === "/status") {
@@ -370,6 +418,7 @@ const server = http.createServer(async (req, res) => {
     if (JSON.stringify(fields).length > 4300) return send(res, 413, { error: "payload_too_large" });
     const r = await postEnvelope(fields);
     if (!r.ok) return send(res, 502, { error: "cliq_post_failed", status: r.status, code: r.code });
+    if (type === "alert" && !isExternal(agent) && /^WAKE FAILED/.test(payloadText)) notifyHuman("urgent", payloadText.slice(0, 400) + " Request ID " + cid + ".");
     return send(res, 201, { posted: true, message_id: r.message.id, envelope: publicView(r.message).envelope, delivery: pushLog.get(r.message.id) || {},
       ack_required: type === "request" && to !== "all" });
   } catch (e) {
