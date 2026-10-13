@@ -1,0 +1,184 @@
+{
+ "plugins": {
+  "entries": {
+   "agent-bus": {
+    "enabled": true
+   }
+  }
+ },
+ "agents": {
+  "entries": {
+   "bizops": {
+    "tools": {
+     "alsoAllow": [
+      "sessions_list",
+      "sessions_history",
+      "sessions_search",
+      "sessions_send",
+      "sessions_yield",
+      "session_status",
+      "zoho_projects_inventory",
+      "zoho_projects_task_read",
+      "zoho_projects_test_update",
+      "bizops_direct_read",
+      "bizops_direct_write",
+      "bizops_direct_validate",
+      "finance_direct_read",
+      "finance_direct_write",
+      "salesmkt_direct_read",
+      "salesmkt_direct_write",
+      "systems_direct_read",
+      "systems_direct_write",
+      "compliance_direct_read",
+      "compliance_direct_write",
+      "codedev_direct_read",
+      "codedev_direct_write",
+      "bus_send",
+      "bus_status",
+      "bus_inbox"
+     ]
+    }
+   },
+   "finance": {
+    "tools": {
+     "alsoAllow": [
+      "sessions_list",
+      "sessions_history",
+      "sessions_search",
+      "sessions_send",
+      "sessions_yield",
+      "session_status",
+      "finance_direct_read",
+      "finance_direct_write",
+      "finance_direct_validate",
+      "bizops_direct_read",
+      "bizops_direct_write",
+      "salesmkt_direct_read",
+      "salesmkt_direct_write",
+      "systems_direct_read",
+      "systems_direct_write",
+      "compliance_direct_read",
+      "compliance_direct_write",
+      "codedev_direct_read",
+      "codedev_direct_write",
+      "bus_send",
+      "bus_status",
+      "bus_inbox"
+     ]
+    }
+   },
+   "salesmkt": {
+    "tools": {
+     "alsoAllow": [
+      "sessions_list",
+      "sessions_history",
+      "sessions_search",
+      "sessions_send",
+      "sessions_yield",
+      "session_status",
+      "salesmkt_direct_read",
+      "salesmkt_direct_write",
+      "salesmkt_direct_validate",
+      "bizops_direct_read",
+      "bizops_direct_write",
+      "finance_direct_read",
+      "finance_direct_write",
+      "systems_direct_read",
+      "systems_direct_write",
+      "compliance_direct_read",
+      "compliance_direct_write",
+      "codedev_direct_read",
+      "codedev_direct_write",
+      "bus_send",
+      "bus_status",
+      "bus_inbox"
+     ]
+    }
+   },
+   "systems": {
+    "tools": {
+     "alsoAllow": [
+      "sessions_list",
+      "sessions_history",
+      "sessions_search",
+      "sessions_send",
+      "sessions_yield",
+      "session_status",
+      "systems_direct_read",
+      "systems_direct_write",
+      "systems_direct_validate",
+      "bizops_direct_read",
+      "bizops_direct_write",
+      "finance_direct_read",
+      "finance_direct_write",
+      "salesmkt_direct_read",
+      "salesmkt_direct_write",
+      "compliance_direct_read",
+      "compliance_direct_write",
+      "codedev_direct_read",
+      "codedev_direct_write",
+      "bus_send",
+      "bus_status",
+      "bus_inbox"
+     ]
+    }
+   },
+   "compliance": {
+    "tools": {
+     "alsoAllow": [
+      "sessions_list",
+      "sessions_history",
+      "sessions_search",
+      "sessions_send",
+      "sessions_yield",
+      "session_status",
+      "compliance_direct_read",
+      "compliance_direct_write",
+      "compliance_direct_validate",
+      "bizops_direct_read",
+      "bizops_direct_write",
+      "finance_direct_read",
+      "finance_direct_write",
+      "salesmkt_direct_read",
+      "salesmkt_direct_write",
+      "systems_direct_read",
+      "systems_direct_write",
+      "codedev_direct_read",
+      "codedev_direct_write",
+      "bus_send",
+      "bus_status",
+      "bus_inbox"
+     ]
+    }
+   },
+   "codedev": {
+    "tools": {
+     "alsoAllow": [
+      "sessions_list",
+      "sessions_history",
+      "sessions_search",
+      "sessions_send",
+      "sessions_yield",
+      "session_status",
+      "codedev_direct_read",
+      "codedev_direct_write",
+      "codedev_direct_validate",
+      "bizops_direct_read",
+      "bizops_direct_write",
+      "finance_direct_read",
+      "finance_direct_write",
+      "salesmkt_direct_read",
+      "salesmkt_direct_write",
+      "systems_direct_read",
+      "systems_direct_write",
+      "compliance_direct_read",
+      "compliance_direct_write",
+      "bus_send",
+      "bus_status",
+      "bus_inbox"
+     ]
+    }
+   }
+  }
+ }
+}

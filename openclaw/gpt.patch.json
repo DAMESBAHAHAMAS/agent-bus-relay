@@ -1,0 +1,1 @@
+{"agents":{"entries":{"gpt":{"identity":{"name":"GPT","theme":"General assistant consulted over the agent bus. No tools, no authority, outside agent."},"tools":{"profile":"minimal","deny":["group:runtime","group:fs","group:web","group:ui","group:nodes","group:automation","group:messaging","group:sessions","group:media","group:agents","gateway"]}}}}}

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// bus-send: lets an agent on this Mac start a conversation on the agent bus.
-// Usage: bus-send.js --as <your agent id> --to <agent id or all> [--type request|result|alert] [--id <correlation id>] "message text"
+// bus-send: send a message on the agent bus from this Mac, as one named agent.
+// Usage: bus-send.js --as <your agent name> --to <agent name or all> [--type request|result|ack|alert] [--id <correlation id>] "message text"
 // The relay sets "from" from the key, so an agent can only ever speak as itself.
 const { execFileSync } = require("child_process");
 const os = require("os");
@@ -13,7 +13,7 @@ for (let i = 0; i < args.length; i++) {
 }
 const text = rest.join(" ").trim();
 if (!opt.as || !opt.to || !text) {
-  console.error('usage: bus-send.js --as <agent> --to <agent|all> [--type request|result|alert] [--id <correlation id>] "message"');
+  console.error('usage: bus-send.js --as <agent> --to <agent|all> [--type request|result|ack|alert] [--id <correlation id>] "message"');
   process.exit(2);
 }
 let key = "";
@@ -26,6 +26,6 @@ fetch(base + "/messages", { method: "POST", headers: { Authorization: "Bearer " 
   .then(async (r) => {
     const j = await r.json().catch(() => ({}));
     if (r.status === 201) console.log("SENT to " + opt.to + " | correlation_id " + j.envelope.correlation_id + " | delivery " + JSON.stringify(j.delivery) + (j.ack_required ? " | acknowledgment required" : ""));
-    else { console.error("NOT SENT: HTTP " + r.status + " " + JSON.stringify(j)); process.exit(1); }
+    else { console.error("NOT SENT: HTTP " + r.status + " " + (j.error || "") + (j.detail ? " - " + j.detail : "")); process.exit(1); }
   })
   .catch((e) => { console.error("NOT SENT: " + e.message); process.exit(1); });
