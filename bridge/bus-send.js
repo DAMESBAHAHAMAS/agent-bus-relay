@@ -2,6 +2,7 @@
 // bus-send: send a message on the agent bus from this Mac, as one named agent.
 // Usage: bus-send.js --as <your agent name> --to <agent name or all> [--type request|result|ack|alert] [--id <correlation id>] [--wait <seconds>] "message text"
 // --wait: after sending a request, wait for the recipient's own acknowledgment and print its reply.
+//         With --to all (a roll call), print each agent's own reply as it arrives and list who stayed silent.
 // The relay sets "from" from the key, so an agent can only ever speak as itself.
 const { execFileSync } = require("child_process");
 const os = require("os");
@@ -33,6 +34,25 @@ fetch(base + "/messages", { method: "POST", headers: { Authorization: "Bearer " 
       if (!waitS || !j.ack_required) return;
       const get = (p) => fetch(base + p, { headers: { Authorization: "Bearer " + key }, signal: AbortSignal.timeout(30000) }).then((x) => x.json()).catch(() => ({}));
       const t0 = Date.now();
+      if (opt.to === "all") {
+        const seen = new Set();
+        const expected = j.recipients || [];
+        console.log("ROLL CALL: waiting for " + expected.length + " agents: " + expected.join(", "));
+        while (Date.now() - t0 < waitS * 1000 && seen.size < expected.length) {
+          await new Promise((ok) => setTimeout(ok, 3000));
+          const st = await get("/status?correlation_id=" + encodeURIComponent(cid));
+          for (const r of st.recipients || []) {
+            if (r.state !== "acknowledged" || seen.has(r.to)) continue;
+            seen.add(r.to);
+            const last = (r.replies || []).slice(-1)[0];
+            console.log("ACKNOWLEDGED by " + r.to + " after " + r.waiting_seconds + " seconds: " + (last ? last.text.replace(/\s+/g, " ").slice(0, 400) : "(reply text not found; see #agent-bus)"));
+          }
+        }
+        const silent = expected.filter((a) => !seen.has(a));
+        console.log("ROLL CALL: " + seen.size + " of " + expected.length + " acknowledged." + (silent.length ? " NO ACKNOWLEDGMENT yet from: " + silent.join(", ") + ". The relay will report them." : ""));
+        if (silent.length) process.exitCode = 4;
+        return;
+      }
       while (Date.now() - t0 < waitS * 1000) {
         await new Promise((ok) => setTimeout(ok, 2000));
         const st = await get("/status?correlation_id=" + encodeURIComponent(cid));

@@ -4,6 +4,7 @@
 // - Outbound connections only. The OpenClaw gateway stays private on this Mac.
 // - Every bus message is wrapped in a fixed frame that says who sent it and how far it can be trusted.
 // - The bridge never invents an acknowledgment. No agent reply means no acknowledgment, and the relay reports the silence.
+// - Every agent owes its own reply. A request to "all" carries one id for many agents, so work is tracked per agent and id.
 const { execFile, execFileSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -114,18 +115,20 @@ async function api(key, method, pathAndQuery, body, timeoutMs) {
   return { status: r.status, json: j };
 }
 
+const job = (agent, cid) => agent + "|" + cid;
 async function handle(agent, key, env) {
   const cid = env.correlation_id;
-  if (busy.has(cid) || done.has(cid) || (attempts.get(cid) || 0) >= MAX_ATTEMPTS) return;
-  busy.add(cid);
-  attempts.set(cid, (attempts.get(cid) || 0) + 1);
+  const k = job(agent, cid);
+  if (busy.has(k) || done.has(k) || (attempts.get(k) || 0) >= MAX_ATTEMPTS) return;
+  busy.add(k);
+  attempts.set(k, (attempts.get(k) || 0) + 1);
   log(agent, "woken by", env.sender_class, "agent", env.from, "id", cid);
   try {
     const result = await WAKE[KINDS[agent]](agent, frame(agent, env), env);
     if (!result.ok) {
       log(agent, "produced no reply for", cid, "(" + result.status + "). No acknowledgment sent.");
       // After the last attempt, say so on the bus. This is an alert, never an acknowledgment, so the request stays open.
-      if ((attempts.get(cid) || 0) >= MAX_ATTEMPTS) {
+      if ((attempts.get(k) || 0) >= MAX_ATTEMPTS) {
         await api(key, "POST", "/messages", { to: env.from, type: "alert", correlation_id: cid,
           payload: "WAKE FAILED: " + agent + " could not be woken (" + result.status + "). This notice is from the Mac bridge, not from " + agent + ". The request is still unacknowledged." }).catch(() => {});
       }
@@ -136,9 +139,9 @@ async function handle(agent, key, env) {
     if (r.status === 422) { // the agent did reply, but the relay withheld the content
       r = await api(key, "POST", "/messages", { to: env.from, type: "ack", correlation_id: cid, payload: "Received. My full reply was withheld by the relay: " + String(r.json.detail || "sensitive content") });
     }
-    if (r.status === 201) { done.add(cid); save(); log(agent, type === "result" ? "answered" : "acknowledged", cid); }
+    if (r.status === 201) { done.add(k); save(); log(agent, type === "result" ? "answered" : "acknowledged", cid); }
     else log(agent, "could not post its reply for", cid, "HTTP", r.status, JSON.stringify(r.json).slice(0, 160));
-  } finally { busy.delete(cid); }
+  } finally { busy.delete(k); }
 }
 
 async function loop(agent) {
@@ -156,7 +159,8 @@ async function loop(agent) {
         if (m.envelope && m.envelope.type === "request") todo.set(m.envelope.correlation_id, m.envelope);
       }
       state.since[agent] = since; save();
-      const waiting = (r.json.pending_acks || []).filter((p) => !todo.has(p.correlation_id) && !done.has(p.correlation_id) && !busy.has(p.correlation_id) && (attempts.get(p.correlation_id) || 0) < MAX_ATTEMPTS);
+      const waiting = (r.json.pending_acks || []).filter((p) => { const k = job(agent, p.correlation_id);
+        return !todo.has(p.correlation_id) && !done.has(k) && !busy.has(k) && (attempts.get(k) || 0) < MAX_ATTEMPTS; });
       if (waiting.length) {
         const all = await api(key, "GET", "/messages?for_me=1&since=0");
         for (const m of all.json.messages || []) if (m.envelope && m.envelope.type === "request" && waiting.some((p) => p.correlation_id === m.envelope.correlation_id)) todo.set(m.envelope.correlation_id, m.envelope);
@@ -168,5 +172,5 @@ async function loop(agent) {
 }
 
 const mine = (process.env.BUS_AGENTS ? process.env.BUS_AGENTS.split(",") : Object.keys(KINDS)).map((s) => s.trim()).filter((a) => KINDS[a]);
-log("bus-bridge v2 starting for", mine.join(", "), "->", BASE);
+log("bus-bridge v3 starting for", mine.join(", "), "->", BASE);
 for (const a of mine) loop(a);

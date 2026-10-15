@@ -96,6 +96,15 @@ for a in bizops finance salesmkt systems compliance codedev claude-code gpt zia-
   if [ "$code" = "201" ]; then s="$(wait_ack "$id" 40)"; else s="not posted: $(jq -r '.error // "?"' /tmp/bt.json)"; fi
   if [ "$s" = "acknowledged" ]; then get "$KO" "/status?correlation_id=$id" >/dev/null; ok "$a was woken and acknowledged in $(jq -r .waiting_seconds /tmp/bt.json)s (delivery: $d)"; else bad "$a acknowledged" "post HTTP $code, state after $(( $(date +%s) - t0 ))s: $s, delivery: $d"; fi
 done
+echo "===== ROLL CALL: a request to all is answered by every agent that can be woken ====="
+human_note "Test note from Claude: starting the roll-call test."
+id="rollcall-$RUN"
+code="$(post "$KO" "{\"to\":\"all\",\"type\":\"request\",\"correlation_id\":\"$id\",\"payload\":\"Roll call from Damian's test console. Confirm you received this.\"}")"; check "the roll call is carried" "$code" "201"
+for i in $(seq 1 30); do get "$KO" "/status?correlation_id=$id" >/dev/null; n="$(jq '[.recipients[]?|select(.to|test("^claude-(bizops|finance|salesmkt|systems|compliance)$")|not)|select(.state!="acknowledged")]|length' /tmp/bt.json)"; [ "$n" = "0" ] && break; sleep 4; done
+for a in bizops finance salesmkt systems compliance codedev claude-code zia-projects; do
+  s="$(jq -r ".recipients[]?|select(.to==\"$a\")|.state" /tmp/bt.json)"; [ "$s" = "acknowledged" ] && ok "$a answered the roll call itself" || bad "$a answered the roll call itself" "state: ${s:-not on the roll call}"
+done
+check "an outside agent is not on the roll call" "$(jq '[.recipients[]?|select(.to=="gpt" or .to=="muse")]|length' /tmp/bt.json)" "0"
 echo "===== OUTSIDE AGENT AT THE FRONT DOOR ====="
 human_note "Test note from Claude: starting the outside-agent test."
 id="outside-$RUN"

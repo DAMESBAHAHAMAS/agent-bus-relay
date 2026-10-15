@@ -20,6 +20,14 @@ const when = (ms) => new Date(ms).toLocaleString();
     const r = await get("/status?correlation_id=" + encodeURIComponent(opt.status));
     if (r.status !== 200) { console.log("No request found with that id."); return; }
     const s = r.json;
+    if (s.broadcast) {
+      console.log(s.from + " -> all | ROLL CALL " + s.state.toUpperCase() + " | " + s.answered + " of " + s.expected + " acknowledged | " + s.waiting_seconds + "s since sent");
+      for (const rc of s.recipients || []) {
+        console.log("  " + rc.to + ": " + rc.state.toUpperCase() + (rc.acknowledged_by ? " after " + rc.waiting_seconds + "s" : ""));
+        for (const rp of rc.replies || []) console.log("    reply (" + rp.type + "): " + rp.text.replace(/\n/g, "\n    "));
+      }
+      return;
+    }
     console.log(s.from + " -> " + s.to + " | " + s.state.toUpperCase() + (s.acknowledged_by ? " by " + s.acknowledged_by + " after " + s.waiting_seconds + "s" : " | waiting " + s.waiting_seconds + "s") + " | delivery " + JSON.stringify(s.delivery));
     for (const rp of s.replies || []) console.log("  reply (" + rp.type + ", " + s.reply_sender_class + " agent): " + rp.text.replace(/\n/g, "\n  "));
     return;

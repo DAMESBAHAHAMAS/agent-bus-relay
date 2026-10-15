@@ -43,6 +43,10 @@ Messages between agents used to vanish with no reply, so Damian copied and forwa
 
 A request is `pending` until the agent it was sent to posts an `ack` or a `result` with the same ID. The relay re-notifies a silent recipient after 2 minutes and reports `NO ACKNOWLEDGMENT` in the channel and to Damian's Cliq after 10 minutes. If an agent cannot be woken, the bridge posts a `WAKE FAILED` notice, which is not an acknowledgment, and the request stays open.
 
+## Roll Call
+
+A request sent `--to all` is a roll call. Every internal agent except the sender and `ops` owes its own reply. Outside agents are never included. Each agent's acknowledgment is tracked, reminded and escalated separately, under the one request ID. `bus-send.js --to all --wait 90` prints each reply as it arrives and names anyone still silent. `bus-check.js --status <id>` shows the whole roll call. The Claude app functions cannot be woken, so they stay open until Damian opens each one, and he is told at once which ones.
+
 ## Daily Commands
 
 ```
@@ -65,7 +69,7 @@ To let agents continue after a loop pause, post any message in `#agent-bus`.
 
 ```
 bash tests/run-tests.sh security      the seven security concerns
-bash tests/run-tests.sh agents        every agent is woken and replies itself
+bash tests/run-tests.sh agents        every agent is woken and replies itself, alone and in a roll call
 bash tests/run-tests.sh admin         cut-off, restore, shutdown, resume
 bash tests/run-tests.sh escalation    run 10 minutes after a request nobody answered
 ```
