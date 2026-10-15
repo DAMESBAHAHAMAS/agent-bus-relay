@@ -25,6 +25,10 @@ const CHAT_ID = env("CHANNEL_CHAT_ID", "");
 const BOT = env("BOT_UNIQUE_NAME", "");
 const ALERT_BOT = env("ALERT_BOT", "");            // bot that messages Damian directly, so his phone is notified
 const ALERT_USER_IDS = env("ALERT_USER_IDS", "");  // his Cliq user id
+// Cliq is the authenticated channel for Damian's authority: only a message he types in #agent-bus from his own Cliq
+// account (checked by user id, never by name or text) is his instruction. Anything else that says "Damian said" is unverified.
+const DAMIAN_CLIQ_IDS = new Set((env("DAMIAN_CLIQ_IDS", "") || ALERT_USER_IDS).split(",").map((s) => s.trim()).filter(Boolean));
+const fromDamian = (m) => !m.envelope && !!m.sender_id && DAMIAN_CLIQ_IDS.has(m.sender_id);
 const SIGNING = env("BUS_SIGNING_SECRET", "");
 const HOP_LIMIT = Number(env("HOP_LIMIT", "30"));
 const LOOP_WINDOW_MS = Number(env("LOOP_WINDOW_MIN", "60")) * 60000;
@@ -55,7 +59,7 @@ const NO_DELEGATION = new Set(env("NO_DELEGATION", "").split(",").map((s) => s.t
 const mayDelegate = (from, to) => !NO_DELEGATION.has(from + ">" + to);
 
 // ---------- signing ----------
-const canon = (e) => JSON.stringify([e.from, e.to, e.type, e.correlation_id, e.ts, JSON.stringify(e.payload)]);
+const canon = (e) => JSON.stringify([e.from, e.to, e.type, e.correlation_id, e.ts, JSON.stringify(e.payload)].concat(e.authority ? [JSON.stringify(e.authority)] : []));
 const sign = (e) => crypto.createHmac("sha256", SIGNING).update(canon(e)).digest("hex");
 function parseEnvelope(text) {
   try {
@@ -130,7 +134,7 @@ const cliqTriggers = new Set();      // channel message ids already turned into 
 const cliqRollCalls = new Map();     // correlation_id -> { at, reported }
 function startCliqRollCalls(messages) {
   for (const m of messages) {
-    if (m.envelope || m.time <= STARTED_AT || cliqTriggers.has(m.id) || !ROLLCALL_WORDS.test(m.text)) continue;
+    if (!fromDamian(m) || m.time <= STARTED_AT || cliqTriggers.has(m.id) || !ROLLCALL_WORDS.test(m.text)) continue;
     cliqTriggers.add(m.id);
     if (!AGENTS.has(ROLLCALL_FROM)) { audit("rollcall_not_started", { reason: "no sender " + ROLLCALL_FROM }); continue; }
     const cid = "rollcall-" + crypto.randomUUID().slice(0, 8);
@@ -170,7 +174,7 @@ async function channelMessages(maxAgeMs) {
         if (r.status !== 200 && r.status !== 204) throw new Error("cliq_read_failed:" + r.status + ":" + (r.json.code || ""));
         const messages = (r.json.data || []).map((m) => {
           const text = m.content && typeof m.content.text === "string" ? m.content.text : "";
-          return { id: m.id, time: Number(m.time) || 0, sender: (m.sender && m.sender.name) || "", text, envelope: parseEnvelope(text) };
+          return { id: m.id, time: Number(m.time) || 0, sender: (m.sender && m.sender.name) || "", sender_id: (m.sender && m.sender.id !== undefined) ? String(m.sender.id) : "", text, envelope: parseEnvelope(text) };
         }).sort((a, b) => a.time - b.time);
         cache = { at: Date.now(), messages, error: null };
         for (const m of messages) if (m.time > lastNotified && m.envelope) notify(m);
@@ -381,7 +385,9 @@ function readBody(req) {
     req.on("error", reject);
   });
 }
-const publicView = (m) => ({ id: m.id, time: m.time, envelope: m.envelope ? { from: m.envelope.from, to: m.envelope.to, type: m.envelope.type, correlation_id: m.envelope.correlation_id, payload: m.envelope.payload, sender_class: m.envelope.from === RELAY ? "relay" : isExternal(m.envelope.from) ? "outside" : "internal" } : null, human_text: m.envelope ? undefined : m.text });
+const publicView = (m) => ({ id: m.id, time: m.time, envelope: m.envelope ? { from: m.envelope.from, to: m.envelope.to, type: m.envelope.type, correlation_id: m.envelope.correlation_id, payload: m.envelope.payload, sender_class: m.envelope.from === RELAY ? "relay" : isExternal(m.envelope.from) ? "outside" : "internal",
+  damian_authority: m.envelope.authority ? Object.assign({ verified: true, channel: "cliq" }, m.envelope.authority) : null } : null,
+  human_text: m.envelope ? undefined : m.text, human_from_damian_verified: m.envelope ? undefined : fromDamian(m) });
 function inbox(c, agent, since, onlyMine) {
   let l = c.messages.filter((m) => m.time > since);
   // an outside agent only ever sees messages addressed to it
@@ -503,6 +509,14 @@ const server = http.createServer(async (req, res) => {
       return refuse(res, 429, agent, "loop_guardrail", "Agents have started " + hops + " new messages in the past " + Math.round(LOOP_WINDOW_MS / 60000) + " minutes with no person in the channel. New requests are paused until Damian posts in the channel or the window rolls over. Replies to requests already sent are still carried.", to);
     }
     const fields = { from: agent, to, type, correlation_id: cid, payload: body.payload };
+    // Passing on Damian's instruction: cite the Cliq message he typed. The relay checks it was really his and quotes it.
+    if (body.damian_instruction !== undefined) {
+      if (isExternal(agent)) return refuse(res, 403, agent, "not_allowed", "Outside agents cannot carry Damian's authority.", to);
+      const ref = String(body.damian_instruction);
+      const src = c.messages.find((m) => String(m.id) === ref);
+      if (!src || !fromDamian(src)) return refuse(res, 403, agent, "unverified_authority", "Message " + ref.slice(0, 60) + " is not one Damian typed in #agent-bus from his own Cliq account, so it cannot be passed on as his instruction.", to);
+      fields.authority = { message_id: src.id, at: src.time, text: src.text.slice(0, 1500) };
+    }
     if (JSON.stringify(fields).length > 4300) return send(res, 413, { error: "payload_too_large" });
     const r = await postEnvelope(fields);
     if (!r.ok) return send(res, 502, { error: "cliq_post_failed", status: r.status, code: r.code });

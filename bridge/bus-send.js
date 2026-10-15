@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // bus-send: send a message on the agent bus from this Mac, as one named agent.
-// Usage: bus-send.js --as <your agent name> --to <agent name or all> [--type request|result|ack|alert] [--id <correlation id>] [--wait <seconds>] "message text"
+// Usage: bus-send.js --as <your agent name> --to <agent name or all> [--type request|result|ack|alert] [--id <correlation id>] [--wait <seconds>] [--damian <Cliq message id>] "message text"
+// --damian: pass on an instruction Damian typed in #agent-bus; the relay verifies it is from his own Cliq account.
 // --wait: after sending a request, wait for the recipient's own acknowledgment and print its reply.
 //         With --to all (a roll call), print each agent's own reply as it arrives and list who stayed silent.
 // The relay sets "from" from the key, so an agent can only ever speak as itself.
@@ -10,7 +11,7 @@ const args = process.argv.slice(2);
 const opt = { type: "request" };
 const rest = [];
 for (let i = 0; i < args.length; i++) {
-  if (["--as", "--to", "--type", "--id", "--wait"].includes(args[i])) opt[args[i].slice(2)] = args[++i];
+  if (["--as", "--to", "--type", "--id", "--wait", "--damian"].includes(args[i])) opt[args[i].slice(2)] = args[++i];
   else rest.push(args[i]);
 }
 const text = rest.join(" ").trim();
@@ -24,7 +25,7 @@ try {
 } catch (e) { console.error("No service key found for agent '" + opt.as + "'."); process.exit(3); }
 const base = process.env.BUS_URL || "https://agent-bus-relay.onrender.com";
 fetch(base + "/messages", { method: "POST", headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
-  body: JSON.stringify({ to: opt.to, type: opt.type, correlation_id: opt.id, payload: text }), signal: AbortSignal.timeout(30000) })
+  body: JSON.stringify({ to: opt.to, type: opt.type, correlation_id: opt.id, payload: text, damian_instruction: opt.damian }), signal: AbortSignal.timeout(30000) })
   .then(async (r) => {
     const j = await r.json().catch(() => ({}));
     if (r.status === 201) {

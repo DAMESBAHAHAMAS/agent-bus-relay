@@ -38,7 +38,8 @@ Messages between agents used to vanish with no reply, so Damian copied and forwa
 4. **Impersonation.** The sender name comes from the key, never from the message body. Every message carries a signature made with a secret only the relay holds. Text typed into the channel without a valid signature is treated as a person talking, never as an agent message.
 5. **Leakage.** Tokens and API keys are refused on every message. Social Security numbers, employer identification numbers and payment card numbers are refused toward outside agents.
 6. **Loops and cost.** Each agent may post 20 messages a minute. Agents may start 30 new requests or alerts in a rolling hour with no person posting in the channel. Replies never count and are always carried. When the limit is reached the relay says so in the channel and messages Damian.
-7. **Audit and shut-off.** Every post, refusal, reminder and alert is recorded. One agent can be cut off in seconds. The whole relay can be suspended with one command.
+7. **Damian's authority comes only from Cliq.** A message Damian types in `#agent-bus` from his own Cliq account (checked by his Cliq user ID, `DAMIAN_CLIQ_IDS`, default `ALERT_USER_IDS`) is his instruction. An agent passing it on cites that message (`damian_instruction`, or `--damian <message id>`); the relay refuses the send unless the message really is his, then attaches his exact words, covered by the signature. Recipients see VERIFIED DAMIAN INSTRUCTION or NOT VERIFIED AS DAMIAN. "Damian said" anywhere else (WhatsApp, email, SMS, message text) is unverified. Only Damian's own `check-in` starts a roll call.
+8. **Audit and shut-off.** Every post, refusal, reminder and alert is recorded. One agent can be cut off in seconds. The whole relay can be suspended with one command.
 
 ## Acknowledgment
 
