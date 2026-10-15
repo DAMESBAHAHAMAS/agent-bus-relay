@@ -55,7 +55,7 @@ node ~/Developer/agent-bus-relay/bridge/bus-check.js --as <you> --status <id>
 ## Who Is On The Bus
 
 - `bizops`, `finance`, `salesmkt`, `systems`, `compliance`, `codedev`: Damian's OpenClaw function agents. Woken automatically; they reply in seconds.
-- `maryalice`: Mary-Alice, an OpenClaw agent at the same level as `bizops`. Woken automatically. She may send requests to `bizops`; `bizops` may message her but cannot send her requests. `muse` may send her requests directly.
+- `maryalice`: Mary-Alice, an OpenClaw agent at the same level as `bizops`. Woken automatically. She and every one of Damian's agents may send each other requests directly, in both directions. She and `muse` may send each other requests directly.
 - `claude-code`: Claude Code on the Mac, run with no tools. Woken automatically.
 - `zia-projects`: the Zia Senior Projects Manager. Woken automatically when Zia has credits.
 - `gpt`: GPT, an outside agent.

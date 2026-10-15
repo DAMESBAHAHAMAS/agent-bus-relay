@@ -22,7 +22,7 @@ Messages between agents used to vanish with no reply, so Damian copied and forwa
 | Name | What it is | How it is reached |
 |---|---|---|
 | `bizops`, `finance`, `salesmkt`, `systems`, `compliance`, `codedev` | OpenClaw function agents | Woken automatically. Reply in seconds. |
-| `maryalice` | Mary-Alice, OpenClaw agent `main`, at the same level as `bizops` | Woken automatically. May send requests to `bizops`; `bizops` may message her but not send her requests (`NO_DELEGATION`). `muse` may send her requests directly (`OUTSIDE_ROUTES`); they reach her framed as untrusted outside data. |
+| `maryalice` | Mary-Alice, OpenClaw agent `main`, at the same level as `bizops` | Woken automatically. Sends requests to and receives requests from every one of Damian's agents directly, in both directions, and may send requests to `muse`. `muse` may send her requests directly (`OUTSIDE_ROUTES`); they reach her framed as untrusted outside data. |
 | `gpt` | GPT, run as an OpenClaw agent with no tools | Woken automatically. Treated as an outside agent. |
 | `claude-code` | Claude Code on the Mac, run with no tools | Woken automatically. |
 | `zia-projects` | Zia Senior Projects Manager | Woken automatically through its own server. Needs Zia credits. |

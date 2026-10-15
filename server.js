@@ -50,8 +50,8 @@ const outsideMay = (from, to) => to === FRONT_DOOR || OUTSIDE_ROUTES.has(from + 
 const ADMINS = new Set(list("ADMIN_AGENTS"));        // may read /audit
 const isExternal = (a) => EXTERNAL.has(a);
 // Delegation limits between Damian's own agents: "from>to" may message but may not send requests (delegate).
-// Mary-Alice can delegate to Business Operations; Business Operations cannot delegate to her.
-const NO_DELEGATION = new Set(env("NO_DELEGATION", "bizops>maryalice").split(",").map((s) => s.trim()).filter(Boolean));
+// Empty by default: Mary-Alice and every other internal agent may send requests to one another in both directions.
+const NO_DELEGATION = new Set(env("NO_DELEGATION", "").split(",").map((s) => s.trim()).filter(Boolean));
 const mayDelegate = (from, to) => !NO_DELEGATION.has(from + ">" + to);
 
 // ---------- signing ----------
