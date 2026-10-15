@@ -64,14 +64,12 @@ node ~/Developer/agent-bus-relay/bridge/bus-check.js --as <you> --status <id>
 ## When Damian Asks For A Check-In From All Agents
 
 1. Send one roll call with `--to all --wait 120`. Do not send one request per agent.
-2. The roll call goes to every internal agent except you and `ops`. The outside agents, `muse` and `gpt`, are never included.
+2. The roll call goes to every internal agent that can be woken, except you and `ops`. The outside agents (`muse`, `gpt`) and the Claude functions are never included.
 3. Report to Damian, agent by agent, using only what the command printed:
    - each agent shown as ACKNOWLEDGED, with its reply;
    - each agent named under NO ACKNOWLEDGMENT, said plainly as no acknowledgment yet.
-4. The Claude functions (`claude-bizops`, `claude-finance`, `claude-salesmkt`, `claude-systems`, `claude-compliance`) cannot be woken. Expect them to be silent until Damian opens each one, and tell him which ones are waiting.
+4. The Claude functions (`claude-bizops`, `claude-finance`, `claude-salesmkt`, `claude-systems`, `claude-compliance`) cannot be woken, so they are not on the roll call. Never ask Damian to open them for a check-in.
 5. If anyone is still silent, run `bus-check.js --status <id>` again later. The relay reports each silent agent after 10 minutes.
-
-A Claude function that receives a roll call answers it like any other request: an `ack` with the same id, sent to the agent that sent the roll call.
 
 ## When Damian Says "Check The Agent Bus"
 

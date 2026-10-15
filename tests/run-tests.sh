@@ -105,6 +105,7 @@ for a in bizops finance salesmkt systems compliance codedev claude-code zia-proj
   s="$(jq -r ".recipients[]?|select(.to==\"$a\")|.state" /tmp/bt.json)"; [ "$s" = "acknowledged" ] && ok "$a answered the roll call itself" || bad "$a answered the roll call itself" "state: ${s:-not on the roll call}"
 done
 check "an outside agent is not on the roll call" "$(jq '[.recipients[]?|select(.to=="gpt" or .to=="muse")]|length' /tmp/bt.json)" "0"
+check "no Claude app function is on the roll call" "$(jq '[.recipients[]?|select(.to|startswith("claude-") and .!="claude-code")]|length' /tmp/bt.json)" "0"
 echo "===== OUTSIDE AGENT AT THE FRONT DOOR ====="
 human_note "Test note from Claude: starting the outside-agent test."
 id="outside-$RUN"

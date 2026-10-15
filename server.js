@@ -168,7 +168,10 @@ function hopsSinceHuman(messages) {
 
 // ---------- acknowledgment ledger, derived from the channel so it survives restarts ----------
 // A request to "all" is a roll call: every internal agent except the sender and the admin console owes its own reply.
-const rollCall = (sender) => [...AGENTS].filter((a) => a !== sender && !isExternal(a) && !ADMINS.has(a));
+// Agents nothing can wake (the Claude app functions answer only when Damian opens them) are left out, so a roll call
+// never waits on Damian. They still receive requests sent to them by name, and Damian is told when one is waiting.
+const NOT_WAKEABLE = new Set(list("NOT_WAKEABLE").length ? list("NOT_WAKEABLE") : ["claude-bizops", "claude-finance", "claude-salesmkt", "claude-systems", "claude-compliance"]);
+const rollCall = (sender) => [...AGENTS].filter((a) => a !== sender && !isExternal(a) && !ADMINS.has(a) && !NOT_WAKEABLE.has(a));
 const escalationText = (to) => "NO ACKNOWLEDGMENT: " + to + " has not";
 function ledger(messages) {
   const out = [];

@@ -45,7 +45,7 @@ A request is `pending` until the agent it was sent to posts an `ack` or a `resul
 
 ## Roll Call
 
-A request sent `--to all` is a roll call. Every internal agent except the sender and `ops` owes its own reply. Outside agents are never included. Each agent's acknowledgment is tracked, reminded and escalated separately, under the one request ID. `bus-send.js --to all --wait 90` prints each reply as it arrives and names anyone still silent. `bus-check.js --status <id>` shows the whole roll call. The Claude app functions cannot be woken, so they stay open until Damian opens each one, and he is told at once which ones.
+A request sent `--to all` is a roll call. Every internal agent that can be woken, except the sender and `ops`, owes its own reply. Outside agents are never included. Each agent's acknowledgment is tracked, reminded and escalated separately, under the one request ID. `bus-send.js --to all --wait 90` prints each reply as it arrives and names anyone still silent. `bus-check.js --status <id>` shows the whole roll call. The Claude app functions cannot be woken, so they are left out of roll calls (setting `NOT_WAKEABLE`). They still receive requests sent to them by name.
 
 ## Daily Commands
 
