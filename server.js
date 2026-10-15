@@ -46,6 +46,10 @@ const EXTERNAL = new Set(list("EXTERNAL_AGENTS"));   // agents outside Damian's 
 const FRONT_DOOR = env("FRONT_DOOR", "bizops");      // the only agent an outside agent may send a request to
 const ADMINS = new Set(list("ADMIN_AGENTS"));        // may read /audit
 const isExternal = (a) => EXTERNAL.has(a);
+// Delegation limits between Damian's own agents: "from>to" may message but may not send requests (delegate).
+// Mary-Alice can delegate to Business Operations; Business Operations cannot delegate to her.
+const NO_DELEGATION = new Set(env("NO_DELEGATION", "bizops>maryalice").split(",").map((s) => s.trim()).filter(Boolean));
+const mayDelegate = (from, to) => !NO_DELEGATION.has(from + ">" + to);
 
 // ---------- signing ----------
 const canon = (e) => JSON.stringify([e.from, e.to, e.type, e.correlation_id, e.ts, JSON.stringify(e.payload)]);
@@ -205,7 +209,7 @@ function hopsSinceHuman(messages) {
 // A request to "all" is a roll call: every internal agent except the sender and the admin console owes its own reply.
 // NOT_WAKEABLE (optional) leaves agents that nothing can wake out of roll calls. Empty by default: every agent answers.
 const NOT_WAKEABLE = new Set(list("NOT_WAKEABLE"));
-const rollCall = (sender) => [...AGENTS].filter((a) => a !== sender && !isExternal(a) && !ADMINS.has(a) && !NOT_WAKEABLE.has(a));
+const rollCall = (sender) => [...AGENTS].filter((a) => a !== sender && !isExternal(a) && !ADMINS.has(a) && !NOT_WAKEABLE.has(a) && mayDelegate(sender, a));
 const escalationText = (to) => "NO ACKNOWLEDGMENT: " + to + " has not";
 function ledger(messages) {
   const out = [];
@@ -224,12 +228,15 @@ function ledger(messages) {
   }
   return out;
 }
-const forAgent = (m, agent) => m.envelope && (m.envelope.to === agent || (m.envelope.to === "all" && !isExternal(agent))) && m.envelope.from !== agent;
+const forAgent = (m, agent) => m.envelope && (m.envelope.to === agent || (m.envelope.to === "all" && !isExternal(agent) && mayDelegate(m.envelope.from, agent))) && m.envelope.from !== agent;
 const pendingFor = (messages, agent) => ledger(messages).filter((r) => r.to === agent && r.state !== "acknowledged");
 
 // ---------- routing rules: who may message whom ----------
 function routeDenied(from, to, type, cid, messages) {
-  if (!isExternal(from)) return null; // Damian's own agents may message anyone
+  if (!isExternal(from)) { // Damian's own agents may message anyone, within the delegation limits
+    if (type === "request" && to !== "all" && !mayDelegate(from, to)) return from + " may message " + to + " but may not send requests to " + to + ".";
+    return null;
+  }
   if (to === "all") return "Outside agents may not broadcast.";
   if (type === "ack" || type === "result") {
     const open = messages.some((m) => m.envelope && m.envelope.type === "request" && m.envelope.correlation_id === cid && m.envelope.to === from && m.envelope.from === to);
@@ -243,7 +250,7 @@ function routeDenied(from, to, type, cid, messages) {
 const waiters = new Map();
 const pushLog = new Map();
 function notify(m) {
-  const targets = m.envelope.to === "all" ? [...AGENTS].filter((a) => a !== m.envelope.from && !isExternal(a)) : [m.envelope.to];
+  const targets = m.envelope.to === "all" ? [...AGENTS].filter((a) => a !== m.envelope.from && !isExternal(a) && mayDelegate(m.envelope.from, a)) : [m.envelope.to];
   for (const agent of targets) {
     const set = waiters.get(agent);
     const live = set ? set.size : 0;

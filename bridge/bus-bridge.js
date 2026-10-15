@@ -27,7 +27,7 @@ const SPM_SERVICE = "srv-dafunn2jnfac739on6fg";
 const MAX_ATTEMPTS = 2;
 // which wake path each agent uses
 const KINDS = Object.assign({ bizops: "openclaw", finance: "openclaw", salesmkt: "openclaw", systems: "openclaw", compliance: "openclaw", codedev: "openclaw",
-  gpt: "openclaw", "claude-code": "claude", "zia-projects": "zia",
+  gpt: "openclaw", maryalice: "openclaw", "claude-code": "claude", "zia-projects": "zia",
   "claude-bizops": "claude", "claude-finance": "claude", "claude-salesmkt": "claude", "claude-systems": "claude", "claude-compliance": "claude" }, JSON.parse(process.env.BUS_AGENT_KINDS || "{}"));
 const CHILD_ENV = Object.assign({}, process.env, { PATH: NODE_DIR + ":" + path.join(HOME, ".local/bin") + ":/opt/homebrew/bin:/usr/bin:/bin:" + (process.env.PATH || "") });
 

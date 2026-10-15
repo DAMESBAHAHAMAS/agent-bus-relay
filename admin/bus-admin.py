@@ -16,7 +16,7 @@ SERVICE = "agent-bus-relay"
 AGENTS = ["bizops", "finance", "salesmkt", "systems", "compliance", "codedev",
           "claude-code", "zia-projects", "gpt",
           "claude-bizops", "claude-finance", "claude-salesmkt", "claude-systems", "claude-compliance",
-          "muse", "ops"]
+          "maryalice", "muse", "ops"]
 EXTERNAL = ["muse", "gpt"]
 CUT_FILE = os.path.expanduser("~/.agent-bus/cutoff.json")
 
