@@ -100,12 +100,11 @@ echo "===== ROLL CALL: a request to all is answered by every agent that can be w
 human_note "Test note from Claude: starting the roll-call test."
 id="rollcall-$RUN"
 code="$(post "$KO" "{\"to\":\"all\",\"type\":\"request\",\"correlation_id\":\"$id\",\"payload\":\"Roll call from Damian's test console. Confirm you received this.\"}")"; check "the roll call is carried" "$code" "201"
-for i in $(seq 1 30); do get "$KO" "/status?correlation_id=$id" >/dev/null; n="$(jq '[.recipients[]?|select(.to|test("^claude-(bizops|finance|salesmkt|systems|compliance)$")|not)|select(.state!="acknowledged")]|length' /tmp/bt.json)"; [ "$n" = "0" ] && break; sleep 4; done
-for a in bizops finance salesmkt systems compliance codedev claude-code zia-projects; do
+for i in $(seq 1 30); do get "$KO" "/status?correlation_id=$id" >/dev/null; n="$(jq '[.recipients[]?|select(.state!="acknowledged")]|length' /tmp/bt.json)"; [ "$n" = "0" ] && break; sleep 4; done
+for a in bizops finance salesmkt systems compliance codedev claude-code zia-projects claude-bizops claude-finance claude-salesmkt claude-systems claude-compliance; do
   s="$(jq -r ".recipients[]?|select(.to==\"$a\")|.state" /tmp/bt.json)"; [ "$s" = "acknowledged" ] && ok "$a answered the roll call itself" || bad "$a answered the roll call itself" "state: ${s:-not on the roll call}"
 done
 check "an outside agent is not on the roll call" "$(jq '[.recipients[]?|select(.to=="gpt" or .to=="muse")]|length' /tmp/bt.json)" "0"
-check "no Claude app function is on the roll call" "$(jq '[.recipients[]?|select(.to|startswith("claude-") and .!="claude-code")]|length' /tmp/bt.json)" "0"
 echo "===== OUTSIDE AGENT AT THE FRONT DOOR ====="
 human_note "Test note from Claude: starting the outside-agent test."
 id="outside-$RUN"
