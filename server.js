@@ -43,7 +43,10 @@ for (const pair of env("SERVICE_KEYS", "").split(",")) {
 }
 const AGENTS = new Set(KEYS.values());
 const EXTERNAL = new Set(list("EXTERNAL_AGENTS"));   // agents outside Damian's business functions
-const FRONT_DOOR = env("FRONT_DOOR", "bizops");      // the only agent an outside agent may send a request to
+const FRONT_DOOR = env("FRONT_DOOR", "bizops");      // the agent every outside agent may send requests to
+// Extra direct routes for outside agents, "outside>internal". Damian approved Muse sending requests straight to Mary-Alice.
+const OUTSIDE_ROUTES = new Set(env("OUTSIDE_ROUTES", "muse>maryalice").split(",").map((s) => s.trim()).filter(Boolean));
+const outsideMay = (from, to) => to === FRONT_DOOR || OUTSIDE_ROUTES.has(from + ">" + to);
 const ADMINS = new Set(list("ADMIN_AGENTS"));        // may read /audit
 const isExternal = (a) => EXTERNAL.has(a);
 // Delegation limits between Damian's own agents: "from>to" may message but may not send requests (delegate).
@@ -242,7 +245,7 @@ function routeDenied(from, to, type, cid, messages) {
     const open = messages.some((m) => m.envelope && m.envelope.type === "request" && m.envelope.correlation_id === cid && m.envelope.to === from && m.envelope.from === to);
     return open ? null : "Outside agents may only reply to a request that was addressed to them.";
   }
-  if (to !== FRONT_DOOR) return "Outside agents may only message " + FRONT_DOOR + ".";
+  if (!outsideMay(from, to)) return "Outside agents may only message " + FRONT_DOOR + (from === "muse" && OUTSIDE_ROUTES.has("muse>maryalice") ? " or maryalice" : "") + ".";
   return null;
 }
 
@@ -419,7 +422,7 @@ const server = http.createServer(async (req, res) => {
     const since = Number(url.searchParams.get("since") || "0") || 0;
 
     if (url.pathname === "/agents") {
-      const mayMessage = isExternal(agent) ? [FRONT_DOOR] : [...AGENTS].filter((a) => a !== agent);
+      const mayMessage = isExternal(agent) ? [...AGENTS].filter((a) => a !== agent && outsideMay(agent, a)) : [...AGENTS].filter((a) => a !== agent);
       return send(res, 200, { you: agent, your_class: isExternal(agent) ? "outside" : "internal", you_may_send_requests_to: mayMessage,
         agents: [...AGENTS].map((a) => ({ name: a, class: isExternal(a) ? "outside" : "internal" })) });
     }

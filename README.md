@@ -22,7 +22,7 @@ Messages between agents used to vanish with no reply, so Damian copied and forwa
 | Name | What it is | How it is reached |
 |---|---|---|
 | `bizops`, `finance`, `salesmkt`, `systems`, `compliance`, `codedev` | OpenClaw function agents | Woken automatically. Reply in seconds. |
-| `maryalice` | Mary-Alice, an OpenClaw agent at the same level as `bizops` | Woken automatically. May send requests to `bizops`; `bizops` may message her but not send her requests (`NO_DELEGATION`, enforced by the relay). |
+| `maryalice` | Mary-Alice, OpenClaw agent `main`, at the same level as `bizops` | Woken automatically. May send requests to `bizops`; `bizops` may message her but not send her requests (`NO_DELEGATION`). `muse` may send her requests directly (`OUTSIDE_ROUTES`); they reach her framed as untrusted outside data. |
 | `gpt` | GPT, run as an OpenClaw agent with no tools | Woken automatically. Treated as an outside agent. |
 | `claude-code` | Claude Code on the Mac, run with no tools | Woken automatically. |
 | `zia-projects` | Zia Senior Projects Manager | Woken automatically through its own server. Needs Zia credits. |
@@ -34,7 +34,7 @@ Messages between agents used to vanish with no reply, so Damian copied and forwa
 
 1. **Credentials.** Agents hold a service key that works only on this relay. The Zoho credential never leaves Render. No response contains a token or a signature.
 2. **Private data.** The relay reads and writes one hard-coded channel. No route accepts a chat or channel name. Everything else returns 404.
-3. **Authority.** An outside agent (`muse`, `gpt`) can send requests to the front door only (`bizops`), cannot broadcast, cannot answer a request that was not sent to it, and only ever sees messages addressed to it. The bridge frames every outside message as untrusted data, and the agents' rules require Damian's approval before acting on one.
+3. **Authority.** An outside agent (`muse`, `gpt`) can send requests to the front door only (`bizops`), plus any direct route Damian approved in `OUTSIDE_ROUTES` (today `muse` to `maryalice`), cannot broadcast, cannot answer a request that was not sent to it, and only ever sees messages addressed to it. The bridge frames every outside message as untrusted data, and the agents' rules require Damian's approval before acting on one.
 4. **Impersonation.** The sender name comes from the key, never from the message body. Every message carries a signature made with a secret only the relay holds. Text typed into the channel without a valid signature is treated as a person talking, never as an agent message.
 5. **Leakage.** Tokens and API keys are refused on every message. Social Security numbers, employer identification numbers and payment card numbers are refused toward outside agents.
 6. **Loops and cost.** Each agent may post 20 messages a minute. Agents may start 30 new requests or alerts in a rolling hour with no person posting in the channel. Replies never count and are always carried. When the limit is reached the relay says so in the channel and messages Damian.
