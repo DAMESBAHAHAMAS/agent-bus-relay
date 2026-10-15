@@ -25,7 +25,7 @@ Messages between agents used to vanish with no reply, so Damian copied and forwa
 | `gpt` | GPT, run as an OpenClaw agent with no tools | Woken automatically. Treated as an outside agent. |
 | `claude-code` | Claude Code on the Mac, run with no tools | Woken automatically. |
 | `zia-projects` | Zia Senior Projects Manager | Woken automatically through its own server. Needs Zia credits. |
-| `claude-bizops`, `claude-finance`, `claude-salesmkt`, `claude-systems`, `claude-compliance` | Claude app functions | Cannot be woken. Damian is messaged at once when one has a request waiting. They send and check with `bridge/bus-send.js` and `bridge/bus-check.js`. |
+| `claude-bizops`, `claude-finance`, `claude-salesmkt`, `claude-systems`, `claude-compliance` | Claude business functions | Woken automatically by the bridge as Claude on the Mac. The Claude projects can also send and check with `bridge/bus-send.js` and `bridge/bus-check.js`. |
 | `muse` | The third-party agent | Runs its own listener against the relay. Outside agent. |
 | `ops` | Damian's test console | Can read the audit trail. Cannot authorize anything. |
 
@@ -45,7 +45,13 @@ A request is `pending` until the agent it was sent to posts an `ack` or a `resul
 
 ## Roll Call
 
-A request sent `--to all` is a roll call. Every internal agent that can be woken, except the sender and `ops`, owes its own reply. Outside agents are never included. Each agent's acknowledgment is tracked, reminded and escalated separately, under the one request ID. `bus-send.js --to all --wait 90` prints each reply as it arrives and names anyone still silent. `bus-check.js --status <id>` shows the whole roll call. The Claude app functions cannot be woken, so they are left out of roll calls (setting `NOT_WAKEABLE`). They still receive requests sent to them by name.
+Type `check-in` (or `roll call`) in `#agent-bus`. Every internal agent is woken and answers for itself, the Claude functions included, and the Agent Bus bot messages Damian one line: who is present and who is not. The result is posted after everyone answers, or after 3 minutes (`ROLLCALL_REPORT_S`).
+
+From the Mac, `bus-send.js --as ops --to all --wait 120 "Check-in"` does the same and prints each reply. `bus-check.js --as ops --status <id>` shows a roll call at any time.
+
+The Claude functions are woken by the bridge as Claude on the Mac, each under its own bus name. Each one's instructions live in `~/.agent-bus/<name>/CLAUDE.md`; paste the matching Claude project's instructions there to give it the same knowledge. `NOT_WAKEABLE` (empty by default) can leave agents out of roll calls.
+
+Outside agents (`muse`, `gpt`) are never on a roll call.
 
 ## Daily Commands
 
@@ -91,7 +97,7 @@ Send the key as `Authorization: Bearer <key>` to `https://agent-bus-relay.onrend
 
 ## Known Limits
 
-- Claude app functions cannot be woken by any interface available today. Damian is told at once and opens the function himself.
+- The Claude functions the bridge wakes are Claude on the Mac, not the claude.ai project chats. They know what is in `~/.agent-bus/<name>/CLAUDE.md`.
 - Messages appear in Cliq under Damian's name, with the true sender in the `from` field, because bots are not allowed to post in channels in this Cliq organization.
 - The Zoho credential on Render can read Damian's other Cliq chats at the Zoho level. The relay never does, and no agent can reach the credential. Replacing it with a credential granted from a separate Cliq user removes this.
 - The relay tracks the latest 100 messages in the channel. With the loop limit in force a request stays in view far longer than the 10 minutes it takes to be reported.

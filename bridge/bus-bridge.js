@@ -16,7 +16,10 @@ const NODE_DIR = path.dirname(process.execPath);
 const OPENCLAW = process.env.OPENCLAW_BIN || path.join(NODE_DIR, "openclaw");
 const CLAUDE = process.env.CLAUDE_BIN || path.join(HOME, ".local/bin/claude");
 const CLAUDE_MODEL = process.env.BUS_CLAUDE_MODEL || "sonnet";
-const CLAUDE_DIR = path.join(HOME, ".agent-bus", "claude-code");
+const AGENT_HOME = path.join(HOME, ".agent-bus");  // one folder per Claude agent; its CLAUDE.md holds that function's instructions
+// The Claude app functions are woken here as Claude on this Mac, each under its own bus name and role.
+const ROLES = { "claude-bizops": "Business Operations", "claude-finance": "Finance", "claude-salesmkt": "Sales and Marketing",
+  "claude-systems": "Systems and Automation", "claude-compliance": "Compliance" };
 const STATE_FILE = path.join(HOME, ".openclaw", "agent-bus-bridge-state.json");
 const RUN_TIMEOUT_S = Number(process.env.BUS_RUN_TIMEOUT_S || "300");
 const SPM_URL = process.env.BUS_SPM_MCP_URL || "https://senior-projects-manager-mcp-server.onrender.com/mcp";
@@ -24,7 +27,8 @@ const SPM_SERVICE = "srv-dafunn2jnfac739on6fg";
 const MAX_ATTEMPTS = 2;
 // which wake path each agent uses
 const KINDS = Object.assign({ bizops: "openclaw", finance: "openclaw", salesmkt: "openclaw", systems: "openclaw", compliance: "openclaw", codedev: "openclaw",
-  gpt: "openclaw", "claude-code": "claude", "zia-projects": "zia" }, JSON.parse(process.env.BUS_AGENT_KINDS || "{}"));
+  gpt: "openclaw", "claude-code": "claude", "zia-projects": "zia",
+  "claude-bizops": "claude", "claude-finance": "claude", "claude-salesmkt": "claude", "claude-systems": "claude", "claude-compliance": "claude" }, JSON.parse(process.env.BUS_AGENT_KINDS || "{}"));
 const CHILD_ENV = Object.assign({}, process.env, { PATH: NODE_DIR + ":" + path.join(HOME, ".local/bin") + ":/opt/homebrew/bin:/usr/bin:/bin:" + (process.env.PATH || "") });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -78,9 +82,16 @@ async function wakeOpenClaw(agent, prompt, env) {
   } catch (e) { return { ok: false, text: "", status: r.err ? "run_failed" : "unreadable_output" }; }
 }
 async function wakeClaude(agent, prompt) {
-  fs.mkdirSync(CLAUDE_DIR, { recursive: true });
+  const dir = path.join(AGENT_HOME, agent);
+  fs.mkdirSync(dir, { recursive: true });
+  const role = ROLES[agent];
+  const md = path.join(dir, "CLAUDE.md");
+  if (role && !fs.existsSync(md)) fs.writeFileSync(md, "# " + role + " (" + agent + ")\n\nYou are Damian Knowles's " + role + " function on his agent bus.\nPaste this function's project instructions below to give it the same knowledge as the Claude project.\n");
+  const system = role
+    ? "You are " + role + " (bus name " + agent + "), one of Damian Knowles's Claude business functions, answering on his agent bus. You have no tools in this mode. Answer from the message and your instructions, and say plainly when you cannot verify something."
+    : "You are Claude Code, answering on Damian Knowles's agent bus. You have no tools in this mode. Answer from the message alone, and say plainly when you cannot verify something.";
   const r = await run(CLAUDE, ["-p", prompt, "--model", CLAUDE_MODEL, "--output-format", "json", "--tools", "", "--strict-mcp-config", "--no-session-persistence",
-    "--append-system-prompt", "You are Claude Code, answering on Damian Knowles's agent bus. You have no tools in this mode. Answer from the message alone, and say plainly when you cannot verify something."], { cwd: CLAUDE_DIR });
+    "--append-system-prompt", system], { cwd: dir });
   try {
     const j = JSON.parse(r.stdout.slice(r.stdout.indexOf("{")));
     const text = typeof j.result === "string" ? j.result : "";

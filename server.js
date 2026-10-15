@@ -114,6 +114,40 @@ let cache = { at: 0, messages: [], error: null };
 let inflight = null;
 let reads = [];
 let lastNotified = Date.now();
+// ---------- roll call started by Damian typing "check-in" or "roll call" in #agent-bus ----------
+const STARTED_AT = Date.now();
+const ROLLCALL_FROM = env("ROLLCALL_SENDER", "ops");
+const ROLLCALL_REPORT_MS = Number(env("ROLLCALL_REPORT_S", "180")) * 1000;
+const ROLLCALL_WORDS = /^\s*(check[\s-]?in|roll[\s-]?call)\s*[.!?]?\s*$/i;
+const cliqTriggers = new Set();      // channel message ids already turned into a roll call
+const cliqRollCalls = new Map();     // correlation_id -> { at, reported }
+function startCliqRollCalls(messages) {
+  for (const m of messages) {
+    if (m.envelope || m.time <= STARTED_AT || cliqTriggers.has(m.id) || !ROLLCALL_WORDS.test(m.text)) continue;
+    cliqTriggers.add(m.id);
+    if (!AGENTS.has(ROLLCALL_FROM)) { audit("rollcall_not_started", { reason: "no sender " + ROLLCALL_FROM }); continue; }
+    const cid = "rollcall-" + crypto.randomUUID().slice(0, 8);
+    cliqRollCalls.set(cid, { at: Date.now(), reported: false });
+    setImmediate(() => postEnvelope({ from: ROLLCALL_FROM, to: "all", type: "request", correlation_id: cid,
+      payload: "Roll call from Damian in #agent-bus. Reply with one word: present." }).catch(() => {}));
+    audit("rollcall_started", { correlation_id: cid, trigger: m.id });
+  }
+}
+async function reportCliqRollCalls(messages) {
+  for (const [cid, rc] of cliqRollCalls) {
+    if (rc.reported) continue;
+    const rows = ledger(messages).filter((r) => r.correlation_id === cid);
+    if (!rows.length) continue;
+    const present = rows.filter((r) => r.state === "acknowledged").map((r) => r.to);
+    const absent = rows.filter((r) => r.state !== "acknowledged").map((r) => r.to);
+    if (absent.length && Date.now() - rc.at < ROLLCALL_REPORT_MS) continue;
+    rc.reported = true;
+    const text = "ROLL CALL: " + present.length + " of " + rows.length + " present." + (present.length ? " Present: " + present.join(", ") + "." : "") +
+      (absent.length ? " NOT PRESENT: " + absent.join(", ") + "." : "");
+    await postEnvelope({ from: RELAY, to: ROLLCALL_FROM, type: "alert", correlation_id: cid, payload: text });
+    notifyHuman("rollcall", text);
+  }
+}
 async function channelMessages(maxAgeMs) {
   if (Date.now() - cache.at < maxAgeMs) return cache;
   reads = reads.filter((t) => Date.now() - t < 60000);
@@ -133,6 +167,7 @@ async function channelMessages(maxAgeMs) {
         }).sort((a, b) => a.time - b.time);
         cache = { at: Date.now(), messages, error: null };
         for (const m of messages) if (m.time > lastNotified && m.envelope) notify(m);
+        startCliqRollCalls(messages);
         if (messages.length) lastNotified = Math.max(lastNotified, messages[messages.length - 1].time);
         lastErr = null;
         break;
@@ -168,9 +203,8 @@ function hopsSinceHuman(messages) {
 
 // ---------- acknowledgment ledger, derived from the channel so it survives restarts ----------
 // A request to "all" is a roll call: every internal agent except the sender and the admin console owes its own reply.
-// Agents nothing can wake (the Claude app functions answer only when Damian opens them) are left out, so a roll call
-// never waits on Damian. They still receive requests sent to them by name, and Damian is told when one is waiting.
-const NOT_WAKEABLE = new Set(list("NOT_WAKEABLE").length ? list("NOT_WAKEABLE") : ["claude-bizops", "claude-finance", "claude-salesmkt", "claude-systems", "claude-compliance"]);
+// NOT_WAKEABLE (optional) leaves agents that nothing can wake out of roll calls. Empty by default: every agent answers.
+const NOT_WAKEABLE = new Set(list("NOT_WAKEABLE"));
 const rollCall = (sender) => [...AGENTS].filter((a) => a !== sender && !isExternal(a) && !ADMINS.has(a) && !NOT_WAKEABLE.has(a));
 const escalationText = (to) => "NO ACKNOWLEDGMENT: " + to + " has not";
 function ledger(messages) {
@@ -242,7 +276,7 @@ async function postEnvelope(fields) {
 }
 
 // ---------- direct alerts to Damian through the Agent Bus bot (his own posts in the channel do not notify him) ----------
-const humanLog = { urgent: [], security: [], manual: [] };
+const humanLog = { urgent: [], security: [], manual: [], rollcall: [] };
 const lastSeen = new Map();   // agent -> last time it listened or checked
 let loopPauseNotifiedAt = 0;
 async function notifyHuman(kind, text) {
@@ -286,6 +320,7 @@ async function watchdog() {
   try {
     if (!CHANNEL || !CHAT_ID || !SIGNING) return;
     const c = await channelMessages(15000);
+    await reportCliqRollCalls(c.messages);
     const silent = new Map(); // correlation_id -> { from, minutes, agents }
     for (const r of ledger(c.messages)) {
       if (r.state === "acknowledged") continue;
