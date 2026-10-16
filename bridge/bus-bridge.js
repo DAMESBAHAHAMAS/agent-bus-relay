@@ -83,7 +83,7 @@ function run(bin, args, opts) {
 // Bus name -> OpenClaw agent id, where they differ. Mary-Alice is OpenClaw's default agent "main".
 const OPENCLAW_IDS = Object.assign({ maryalice: "main" }, JSON.parse(process.env.BUS_OPENCLAW_IDS || "{}"));
 async function wakeOpenClaw(agent, prompt, env) {
-  const session = env.sender_class === "outside" ? "agent-bus-outside" : "agent-bus";
+  const session = env.session || (env.sender_class === "outside" ? "agent-bus-outside" : "agent-bus");
   const r = await run(OPENCLAW, ["agent", "--agent", OPENCLAW_IDS[agent] || agent, "--session-key", session, "--message", prompt, "--json", "--timeout", String(RUN_TIMEOUT_S)]);
   try {
     const j = JSON.parse(r.stdout.slice(r.stdout.indexOf("{")));
@@ -167,6 +167,24 @@ async function handle(agent, key, env) {
   } finally { busy.delete(k); }
 }
 
+// ---------- Damian in the agent's own oc- Cliq channel ----------
+// The relay passes on only messages Damian typed from his own Cliq account. The agent's reply is posted back to that channel.
+async function handleChannel(agent, key, m) {
+  const k = "oc|" + agent + "|" + m.id;
+  if (busy.has(k) || done.has(k) || (attempts.get(k) || 0) >= MAX_ATTEMPTS) return;
+  busy.add(k); attempts.set(k, (attempts.get(k) || 0) + 1);
+  log(agent, "woken by Damian in its Cliq channel, message", m.id);
+  try {
+    const prompt = "[CLIQ - Damian, in your own channel. Verified from his own Cliq account, message " + m.id + ".]\n" +
+      "<<<DAMIAN\n" + m.text + "\nDAMIAN>>>\n\nAnswer Damian directly and briefly. Your reply is posted to your Cliq channel automatically. Act within your existing authority and rules.";
+    const result = await WAKE[KINDS[agent]](agent, prompt, { session: "cliq-channel" });
+    if (!result.ok) { log(agent, "produced no channel reply for", m.id, "(" + result.status + ")"); return; }
+    const r = await api(key, "POST", "/channel", { text: result.text.slice(0, 3400), in_reply_to: m.id });
+    if (r.status === 201) { done.add(k); save(); log(agent, "replied in its channel", r.json.message_id); }
+    else log(agent, "could not post its channel reply, HTTP", r.status, JSON.stringify(r.json).slice(0, 160));
+  } finally { busy.delete(k); }
+}
+
 async function loop(agent) {
   let key;
   try { key = keychain("agent-bus-key-" + agent); } catch (e) { log(agent, "has no service key in Keychain. Skipping."); return; }
@@ -189,6 +207,8 @@ async function loop(agent) {
         for (const m of all.json.messages || []) if (m.envelope && m.envelope.type === "request" && waiting.some((p) => p.correlation_id === m.envelope.correlation_id)) todo.set(m.envelope.correlation_id, m.envelope);
       }
       for (const env of todo.values()) handle(agent, key, env); // keep listening while an agent thinks
+      for (const m of r.json.channel_messages || []) { since = Math.max(since, m.time); handleChannel(agent, key, m); }
+      state.since[agent] = since; save();
       if (!(r.json.messages || []).length) await sleep(250);
     } catch (e) { await sleep(5000); }
   }

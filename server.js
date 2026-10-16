@@ -294,6 +294,7 @@ const humanLog = { urgent: [], security: [], manual: [], rollcall: [] };
 const lastSeen = new Map();   // agent -> last time it listened or checked
 let loopPauseNotifiedAt = 0;
 async function notifyHuman(kind, text) {
+  ocAlert(kind.toUpperCase() + ": " + text).catch(() => {});
   if (!ALERT_BOT || !ALERT_USER_IDS) return;
   const now = Date.now();
   const cap = kind === "security" ? 3 : 10;
@@ -305,6 +306,54 @@ async function notifyHuman(kind, text) {
     const r = await cliq("POST", "/bots/" + encodeURIComponent(ALERT_BOT) + "/message", { text: text + suffix, userids: ALERT_USER_IDS });
     audit("human_alert", { alert: kind, status: r.status });
   } catch (e) { audit("human_alert_failed", { alert: kind }); }
+}
+
+// ---------- per-agent Cliq channels (oc-*): Damian <-> one agent; oc-alerts for machine notices ----------
+// OC_CHANNELS = JSON {"bizops":"<chat id>", "finance":"<chat id>", ..., "maryalice":"<oc-command chat id>"}
+// Only Damian's own messages (checked by Cliq user id) reach the agent. Each agent may post only to its own channel.
+let OC = {};
+try { OC = JSON.parse(env("OC_CHANNELS", "{}")); } catch (e) { OC = {}; }
+const OC_ALERTS = env("OC_ALERTS_CHAT", "");
+const OC_POLL_MS = Math.max(30000, Number(env("OC_POLL_S", "60")) * 1000);
+const ocState = new Map();   // agent -> { lastRead, seen: Set, inbox: [] }
+const ocSign = (agent, chat, ts, text) => crypto.createHmac("sha256", SIGNING).update(JSON.stringify(["oc", agent, chat, ts, text])).digest("hex");
+async function ocPoll() {
+  const agents = Object.keys(OC).filter((a) => AGENTS.has(a));
+  if (!agents.length || !SIGNING) return;
+  reads = reads.filter((t) => Date.now() - t < 60000);
+  // read the oldest-checked channel only, and leave headroom for #agent-bus
+  const a = agents.map((x) => [x, (ocState.get(x) || {}).lastRead || 0]).sort((p, q) => p[1] - q[1])[0][0];
+  const st = ocState.get(a) || { lastRead: 0, seen: new Set(), inbox: [] };
+  ocState.set(a, st);
+  if (Date.now() - st.lastRead < OC_POLL_MS || reads.length >= READS_PER_MIN - 3) return;
+  st.lastRead = Date.now();
+  try {
+    reads.push(Date.now());
+    const r = await cliq("GET", "/chats/" + encodeURIComponent(OC[a]) + "/messages?limit=30");
+    if (r.status !== 200 && r.status !== 204) { audit("oc_read_failed", { agent: a, status: r.status }); return; }
+    for (const m of r.json.data || []) {
+      const text = m.content && typeof m.content.text === "string" ? m.content.text : "";
+      const msg = { id: m.id, time: Number(m.time) || 0, sender_id: (m.sender && m.sender.id !== undefined) ? String(m.sender.id) : "", text, envelope: null };
+      if (st.seen.has(msg.id)) continue;
+      st.seen.add(msg.id);
+      if (msg.time <= STARTED_AT || !fromDamian(msg) || !text.trim()) continue;   // only Damian's own words, typed after start-up
+      st.inbox.push({ id: msg.id, time: msg.time, channel_chat: OC[a], text: text.slice(0, 4000), from: "damian", damian_verified: true });
+      audit("oc_message", { agent: a, message_id: msg.id });
+      const set = waiters.get(a); if (set) for (const fn of [...set]) fn();
+    }
+    if (st.inbox.length > 50) st.inbox.splice(0, st.inbox.length - 50);
+  } catch (e) { audit("oc_read_failed", { agent: a, error: String(e.message || e).slice(0, 80) }); }
+}
+setInterval(() => { ocPoll().catch(() => {}); }, 10000);
+const ocInbox = (agent, since) => ((ocState.get(agent) || {}).inbox || []).filter((m) => m.time > since);
+async function ocPost(chat, text) {
+  const r = await cliq("POST", "/chats/" + encodeURIComponent(chat) + "/message", { text, sync_message: true });
+  return { ok: r.status >= 200 && r.status < 300, status: r.status, message_id: r.json.message_id ? decodeURIComponent(String(r.json.message_id)) : null };
+}
+// Machine-only notices for #oc-alerts. Nothing is posted there by hand.
+async function ocAlert(text) {
+  if (!OC_ALERTS) return;
+  try { const r = await ocPost(OC_ALERTS, "[relay] " + text); audit("oc_alert", { status: r.status, message_id: r.message_id }); } catch (e) {}
 }
 
 // A refusal is reported in the channel so Damian sees it. Limited so a misbehaving agent cannot flood the channel.
@@ -397,13 +446,13 @@ function inbox(c, agent, since, onlyMine) {
     messages: l.map(publicView), pending_acks: pendingFor(c.messages, agent) };
 }
 
-const ROUTES = { "/messages": ["GET", "POST"], "/wait": ["GET"], "/status": ["GET"], "/pending": ["GET"], "/agents": ["GET"], "/audit": ["GET"] , "/admin/cutoff": ["POST"], "/admin/restore": ["POST"] };
+const ROUTES = { "/channel": ["POST"], "/messages": ["GET", "POST"], "/wait": ["GET"], "/status": ["GET"], "/pending": ["GET"], "/agents": ["GET"], "/audit": ["GET"] , "/admin/cutoff": ["POST"], "/admin/restore": ["POST"] };
 const blocked = new Set();   // agents cut off by the admin console; takes effect at once
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://x");
     if (req.method === "GET" && url.pathname === "/healthz") {
-      return send(res, 200, { ok: true, version: 6, channel: CHANNEL, configured: Boolean(CHANNEL && CHAT_ID && KEYS.size && SIGNING) });
+      return send(res, 200, { ok: true, version: 7, channel: CHANNEL, configured: Boolean(CHANNEL && CHAT_ID && KEYS.size && SIGNING) });
     }
     if (!ROUTES[url.pathname] || !ROUTES[url.pathname].includes(req.method)) {
       return send(res, 404, { error: "not_found", note: "This service only serves the agent-bus channel." });
@@ -444,7 +493,8 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/wait") { // push: returns the moment a message for this agent arrives
       const timeout = Math.min(25, Math.max(1, Number(url.searchParams.get("timeout") || "25"))) * 1000;
       const c = await channelMessages(POLL_MS);
-      if (inbox(c, agent, since, true).count) return send(res, 200, inbox(c, agent, since, true));
+      const withOc = (c2) => Object.assign(inbox(c2, agent, since, true), { channel_messages: ocInbox(agent, since) });
+      if (inbox(c, agent, since, true).count || ocInbox(agent, since).length) return send(res, 200, withOc(c));
       await new Promise((resolve) => {
         const set = waiters.get(agent) || new Set();
         waiters.set(agent, set);
@@ -454,7 +504,7 @@ const server = http.createServer(async (req, res) => {
         req.on("close", done);
       });
       if (blocked.has(agent)) return send(res, 401, { error: "cut_off" });
-      return send(res, 200, inbox(cache, agent, since, true));
+      return send(res, 200, withOc(cache));
     }
     if (url.pathname === "/status") {
       const cid = String(url.searchParams.get("correlation_id") || "");
@@ -483,6 +533,24 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/pending") {
       const c = await channelMessages(POLL_MS);
       return send(res, 200, { pending: ledger(c.messages).filter((r) => r.state !== "acknowledged" && (!isExternal(agent) || r.from === agent || r.to === agent)) });
+    }
+
+    // ---------- POST /channel: an agent posts in its own oc- channel, signed ----------
+    if (url.pathname === "/channel") {
+      if (!OC[agent]) return send(res, 403, { error: "no_channel", detail: agent + " has no oc- channel." });
+      let b; try { b = JSON.parse((await readBody(req)) || "{}"); } catch (e) { return send(res, 400, { error: "invalid_json" }); }
+      const text = String(b.text || "").trim();
+      if (!text) return send(res, 400, { error: "missing_text" });
+      if (text.length > 3500) return send(res, 413, { error: "text_too_large" });
+      if (!underRate(agent)) return send(res, 429, { error: "rate_limited" });
+      const leak = leakReason(text, false);
+      if (leak) { audit("refused", { from: agent, to: "oc-channel", code: "blocked_sensitive_content" }); return send(res, 422, { error: "blocked_sensitive_content", detail: "It appeared to contain " + leak + "." }); }
+      const ts = new Date().toISOString();
+      const sig = ocSign(agent, OC[agent], ts, text);
+      const r = await ocPost(OC[agent], text + "\n\n— " + agent + " · signed " + ts + " · " + sig.slice(0, 16));
+      if (!r.ok) return send(res, 502, { error: "cliq_post_failed", status: r.status });
+      audit("oc_post", { agent, message_id: r.message_id, in_reply_to: b.in_reply_to || null, sig: sig.slice(0, 16) });
+      return send(res, 201, { posted: true, message_id: r.message_id, channel_chat: OC[agent], signed_at: ts, sig16: sig.slice(0, 16) });
     }
 
     // ---------- POST /messages ----------
@@ -531,4 +599,4 @@ const server = http.createServer(async (req, res) => {
 // which shows up as an occasional 502. Hold connections open longer than the proxy does.
 server.keepAliveTimeout = 120000;
 server.headersTimeout = 125000;
-server.listen(PORT, () => console.log("agent-bus-relay v6 on " + PORT + ", channel " + (CHANNEL || "(unset)") + ", agents: " + [...AGENTS].join(", ") + ", outside: " + [...EXTERNAL].join(", ") + ", front door: " + FRONT_DOOR));
+server.listen(PORT, () => { setTimeout(() => ocAlert("Relay v7 started. Watching " + Object.keys(OC).length + " oc- channels.").catch(() => {}), 5000); console.log("agent-bus-relay v7 on " + PORT + ", channel " + (CHANNEL || "(unset)") + ", agents: " + [...AGENTS].join(", ") + ", outside: " + [...EXTERNAL].join(", ") + ", front door: " + FRONT_DOOR + ", oc channels: " + Object.keys(OC).join(", ")); });

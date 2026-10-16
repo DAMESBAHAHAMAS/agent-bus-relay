@@ -55,6 +55,14 @@ The Claude functions are woken by the bridge as Claude on the Mac, each under it
 
 Outside agents (`muse`, `gpt`) are never on a roll call.
 
+## Function Channels (oc-)
+
+Each function agent has its own Cliq channel: `oc-business-operations`, `oc-finance`, `oc-sales-marketing`, `oc-systems-automation`, `oc-compliance-filings`, plus `oc-command` (Mary-Alice and Damian) and `oc-alerts` (machine-only). `#agent-bus` stays the one agent-to-agent channel.
+
+- The relay reads each channel about once a minute (`OC_CHANNELS`, a JSON map of agent to Cliq chat id). Only messages Damian types from his own Cliq account are passed on. The bridge wakes that agent, and its reply is posted back to the same channel.
+- An agent may post only to its own channel (`POST /channel`). Every post carries a signature line made with the relay's secret.
+- Every alert the relay sends Damian is also posted in `oc-alerts` (`OC_ALERTS_CHAT`), as is each relay start-up.
+
 ## Daily Commands
 
 ```
