@@ -316,6 +316,16 @@ try { OC = JSON.parse(env("OC_CHANNELS", "{}")); } catch (e) { OC = {}; }
 const OC_ALERTS = env("OC_ALERTS_CHAT", "");
 const OC_POLL_MS = Math.max(30000, Number(env("OC_POLL_S", "60")) * 1000);
 const ocState = new Map();   // agent -> { lastRead, seen: Set, inbox: [] }
+const ocPosted = new Set();  // ids of messages the relay itself posted (agent replies, alerts)
+const ocId = (id) => String(id || "").replace(/[ _]/g, "");
+// The relay posts under Damian's account, so his user id alone cannot tell his words from an agent's reply.
+// A message is the relay's own if the relay posted it, or if it ends in a valid agent signature line.
+function ocIsRelayPost(agent, chat, text, id) {
+  if (ocPosted.has(ocId(id)) || /^\[relay\] /.test(text)) return true;
+  const m = text.match(/^([\s\S]*)\n\n— ([a-z0-9-]+) · signed (\S+) · ([0-9a-f]{16})\s*$/);
+  if (!m) return false;
+  return ocSign(m[2], chat, m[3], m[1]).slice(0, 16) === m[4] || m[2] === agent;
+}
 const ocSign = (agent, chat, ts, text) => crypto.createHmac("sha256", SIGNING).update(JSON.stringify(["oc", agent, chat, ts, text])).digest("hex");
 async function ocPoll() {
   const agents = Object.keys(OC).filter((a) => AGENTS.has(a));
@@ -337,6 +347,7 @@ async function ocPoll() {
       if (st.seen.has(msg.id)) continue;
       st.seen.add(msg.id);
       if (msg.time <= STARTED_AT || !fromDamian(msg) || !text.trim()) continue;   // only Damian's own words, typed after start-up
+      if (ocIsRelayPost(a, OC[a], text, msg.id)) continue;                       // never the relay's own posts (agent replies, alerts)
       st.inbox.push({ id: msg.id, time: msg.time, channel_chat: OC[a], text: text.slice(0, 4000), from: "damian", damian_verified: true });
       audit("oc_message", { agent: a, message_id: msg.id });
       const set = waiters.get(a); if (set) for (const fn of [...set]) fn();
@@ -348,7 +359,9 @@ setInterval(() => { ocPoll().catch(() => {}); }, 10000);
 const ocInbox = (agent, since) => ((ocState.get(agent) || {}).inbox || []).filter((m) => m.time > since);
 async function ocPost(chat, text) {
   const r = await cliq("POST", "/chats/" + encodeURIComponent(chat) + "/message", { text, sync_message: true });
-  return { ok: r.status >= 200 && r.status < 300, status: r.status, message_id: r.json.message_id ? decodeURIComponent(String(r.json.message_id)) : null };
+  const message_id = r.json.message_id ? decodeURIComponent(String(r.json.message_id)) : null;
+  if (message_id) { ocPosted.add(ocId(message_id)); if (ocPosted.size > 2000) ocPosted.delete(ocPosted.values().next().value); }
+  return { ok: r.status >= 200 && r.status < 300, status: r.status, message_id };
 }
 // Machine-only notices for #oc-alerts. Nothing is posted there by hand.
 async function ocAlert(text) {

@@ -179,6 +179,7 @@ async function handleChannel(agent, key, m) {
       "<<<DAMIAN\n" + m.text + "\nDAMIAN>>>\n\nAnswer Damian directly and briefly. Your reply is posted to your Cliq channel automatically. Act within your existing authority and rules.";
     const result = await WAKE[KINDS[agent]](agent, prompt, { session: "cliq-channel" });
     if (!result.ok) { log(agent, "produced no channel reply for", m.id, "(" + result.status + ")"); return; }
+    if (/^\s*NO_REPLY\s*$/.test(result.text)) { done.add(k); save(); log(agent, "chose not to reply to", m.id); return; }   // OpenClaw's "nothing to say": post nothing
     const r = await api(key, "POST", "/channel", { text: result.text.slice(0, 3400), in_reply_to: m.id });
     if (r.status === 201) { done.add(k); save(); log(agent, "replied in its channel", r.json.message_id); }
     else log(agent, "could not post its channel reply, HTTP", r.status, JSON.stringify(r.json).slice(0, 160));
