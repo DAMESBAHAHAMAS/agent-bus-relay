@@ -62,6 +62,7 @@ Each function agent has its own Cliq channel: `oc-business-operations`, `oc-fina
 - The relay reads each channel about once a minute (`OC_CHANNELS`, a JSON map of agent to Cliq chat id). Only messages Damian types from his own Cliq account are passed on. The bridge wakes that agent, and its reply is posted back to the same channel.
 - An agent may post only to its own channel (`POST /channel`). Every post carries a signature line made with the relay's secret.
 - Every alert the relay sends Damian is also posted in `oc-alerts` (`OC_ALERTS_CHAT`), as is each relay start-up.
+- Instant delivery: the Agent Bus bot's participation handler (`cliq/oc-hint-participation-handler.deluge`) calls `POST /cliq/oc-hint` with the channel's chat id on every message, and the relay reads that channel within seconds. The hint carries no trust: the relay still reads the message from Cliq and applies the same checks. Without the bot, the once-a-minute read still works.
 
 ## Daily Commands
 

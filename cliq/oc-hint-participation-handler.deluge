@@ -1,0 +1,18 @@
+// Agent Bus bot > Participation Handler (Zoho Cliq).
+// Bot settings: Channel Participation > allow adding to channels, "Listen to Messages" on.
+// Add the bot to the six oc- agent channels (not oc-alerts).
+// On every channel message this tells the relay "read this channel now". It sends the chat id only:
+// the relay re-reads the message from Cliq's API and applies its usual checks, so the hint carries no trust.
+if(operation == "message_sent")
+{
+	payload = Map();
+	payload.put("chat_id",chat.get("id"));
+	resp = invokeurl
+	[
+		url :"https://agent-bus-relay.onrender.com/cliq/oc-hint"
+		type :POST
+		parameters:payload.toString()
+		headers:{"Content-Type":"application/json"}
+	];
+}
+return Map();

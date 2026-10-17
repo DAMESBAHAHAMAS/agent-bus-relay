@@ -327,15 +327,15 @@ function ocIsRelayPost(agent, chat, text, id) {
   return ocSign(m[2], chat, m[3], m[1]).slice(0, 16) === m[4] || m[2] === agent;
 }
 const ocSign = (agent, chat, ts, text) => crypto.createHmac("sha256", SIGNING).update(JSON.stringify(["oc", agent, chat, ts, text])).digest("hex");
-async function ocPoll() {
+async function ocPoll(hinted) {
   const agents = Object.keys(OC).filter((a) => AGENTS.has(a));
   if (!agents.length || !SIGNING) return;
   reads = reads.filter((t) => Date.now() - t < 60000);
-  // read the oldest-checked channel only, and leave headroom for #agent-bus
-  const a = agents.map((x) => [x, (ocState.get(x) || {}).lastRead || 0]).sort((p, q) => p[1] - q[1])[0][0];
+  // read the oldest-checked channel only (or the one a push hint names), and leave headroom for #agent-bus
+  const a = hinted || agents.map((x) => [x, (ocState.get(x) || {}).lastRead || 0]).sort((p, q) => p[1] - q[1])[0][0];
   const st = ocState.get(a) || { lastRead: 0, seen: new Set(), inbox: [] };
   ocState.set(a, st);
-  if (Date.now() - st.lastRead < OC_POLL_MS || reads.length >= READS_PER_MIN - 3) return;
+  if (Date.now() - st.lastRead < (hinted ? OC_HINT_MIN_MS : OC_POLL_MS) || reads.length >= READS_PER_MIN - 3) return false;
   st.lastRead = Date.now();
   try {
     reads.push(Date.now());
@@ -356,6 +356,29 @@ async function ocPoll() {
   } catch (e) { audit("oc_read_failed", { agent: a, error: String(e.message || e).slice(0, 80) }); }
 }
 setInterval(() => { ocPoll().catch(() => {}); }, 10000);
+// Push: the Agent Bus bot's participation handler calls POST /cliq/oc-hint {"chat_id": ...} on every channel message.
+// The hint carries no trust. It only makes the relay read that oc- channel now; the message itself still comes
+// from Cliq's API and passes the same checks (Damian's user id, not a relay post). Polling stays as the fallback.
+const OC_HINT_MIN_MS = 3000;
+const ocHintBusy = new Map();   // agent -> true if another hint came in while a read was under way
+async function ocHint(chat) {
+  const a = Object.keys(OC).find((x) => OC[x] === chat && AGENTS.has(x));
+  if (!a) return "unknown_channel";
+  if (ocHintBusy.has(a)) { ocHintBusy.set(a, true); return "queued"; }
+  ocHintBusy.set(a, false);
+  let result = "deferred";
+  try {
+    for (let i = 0; i < 6; i++) {   // retry briefly if the channel was read moments ago or the read budget is full
+      if ((await ocPoll(a)) !== false) {
+        result = "read";
+        if (!ocHintBusy.get(a)) break;
+        ocHintBusy.set(a, false);    // a later message arrived during the read: read again
+      }
+      await new Promise((r) => setTimeout(r, OC_HINT_MIN_MS));
+    }
+  } finally { ocHintBusy.delete(a); }
+  return result;
+}
 const ocInbox = (agent, since) => ((ocState.get(agent) || {}).inbox || []).filter((m) => m.time > since);
 async function ocPost(chat, text) {
   const r = await cliq("POST", "/chats/" + encodeURIComponent(chat) + "/message", { text, sync_message: true });
@@ -466,6 +489,13 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://x");
     if (req.method === "GET" && url.pathname === "/healthz") {
       return send(res, 200, { ok: true, version: 7, channel: CHANNEL, configured: Boolean(CHANNEL && CHAT_ID && KEYS.size && SIGNING) });
+    }
+    if (req.method === "POST" && url.pathname === "/cliq/oc-hint") {
+      let chat = "";
+      try { const b = JSON.parse((await readBody(req)) || "{}"); chat = String(b.chat_id || b.chat || "").slice(0, 80); } catch (e) {}
+      if (!Object.values(OC).includes(chat)) return send(res, 404, { error: "unknown_channel" });
+      ocHint(chat).then((r) => audit("oc_hint", { chat, result: r })).catch(() => {});
+      return send(res, 202, { ok: true });
     }
     if (!ROUTES[url.pathname] || !ROUTES[url.pathname].includes(req.method)) {
       return send(res, 404, { error: "not_found", note: "This service only serves the agent-bus channel." });
