@@ -379,7 +379,14 @@ async function ocHint(chat) {
   } finally { ocHintBusy.delete(a); }
   return result;
 }
-const ocInbox = (agent, since) => ((ocState.get(agent) || {}).inbox || []).filter((m) => m.time > since);
+// Channel messages are handed out until delivered, not by the bridge's time cursor: bus traffic can move that cursor
+// past a channel message's Cliq post time before the relay has read the channel, which used to drop the message.
+// One re-delivery after OC_REDELIVER_MS if the agent has not replied (the bridge ignores a message it already handled).
+const OC_REDELIVER_MS = 120000;
+const ocInbox = (agent) => ((ocState.get(agent) || {}).inbox || []).filter((m) =>
+  !m.deliveredAt || (!m.replied && m.deliveries < 2 && Date.now() - m.deliveredAt > OC_REDELIVER_MS));
+function ocMarkDelivered(list) { for (const m of list) { m.deliveredAt = Date.now(); m.deliveries = (m.deliveries || 0) + 1; } }
+const ocPublic = (list) => list.map(({ id, time, channel_chat, text, from, damian_verified }) => ({ id, time, channel_chat, text, from, damian_verified }));
 async function ocPost(chat, text) {
   const r = await cliq("POST", "/chats/" + encodeURIComponent(chat) + "/message", { text, sync_message: true });
   const message_id = r.json.message_id ? decodeURIComponent(String(r.json.message_id)) : null;
@@ -536,8 +543,8 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === "/wait") { // push: returns the moment a message for this agent arrives
       const timeout = Math.min(25, Math.max(1, Number(url.searchParams.get("timeout") || "25"))) * 1000;
       const c = await channelMessages(POLL_MS);
-      const withOc = (c2) => Object.assign(inbox(c2, agent, since, true), { channel_messages: ocInbox(agent, since) });
-      if (inbox(c, agent, since, true).count || ocInbox(agent, since).length) return send(res, 200, withOc(c));
+      const withOc = (c2) => { const oc = ocInbox(agent); ocMarkDelivered(oc); return Object.assign(inbox(c2, agent, since, true), { channel_messages: ocPublic(oc) }); };
+      if (inbox(c, agent, since, true).count || ocInbox(agent).length) return send(res, 200, withOc(c));
       await new Promise((resolve) => {
         const set = waiters.get(agent) || new Set();
         waiters.set(agent, set);
@@ -592,6 +599,7 @@ const server = http.createServer(async (req, res) => {
       const sig = ocSign(agent, OC[agent], ts, text);
       const r = await ocPost(OC[agent], text + "\n\n— " + agent + " · signed " + ts + " · " + sig.slice(0, 16));
       if (!r.ok) return send(res, 502, { error: "cliq_post_failed", status: r.status });
+      if (b.in_reply_to) for (const m of (ocState.get(agent) || {}).inbox || []) if (m.id === b.in_reply_to) m.replied = true;
       audit("oc_post", { agent, message_id: r.message_id, in_reply_to: b.in_reply_to || null, sig: sig.slice(0, 16) });
       return send(res, 201, { posted: true, message_id: r.message_id, channel_chat: OC[agent], signed_at: ts, sig16: sig.slice(0, 16) });
     }
