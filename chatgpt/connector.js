@@ -8,8 +8,9 @@
 //  - ChatGPT only accepts OAuth 2.1 with PKCE for remote MCP servers (no static API keys), so the relay is its own small
 //    authorization server. A sign-in is granted only when Damian types "approve chatgpt <code>" in #agent-bus from his own
 //    Cliq account (the same Cliq user-id check as every other Damian instruction). The code is shown only on the sign-in page.
-//  - Tokens are signed with a key derived from BUS_SIGNING_SECRET. No new secret is created or stored.
-//    Raise CHATGPT_TOKEN_GENERATION to revoke every token at once; "bus-admin.py cutoff chatgpt" stops it in seconds.
+//  - Tokens are signed with CHATGPT_OAUTH_SECRET, a dedicated secret held only in Render (at least 32 characters).
+//    Without it the connector stays off. Raise CHATGPT_TOKEN_GENERATION to revoke every token at once;
+//    "bus-admin.py cutoff chatgpt" stops it in seconds and keeps it off across restarts.
 //  - "chatgpt" is an OUTSIDE agent: the relay's own routeDenied() decides whom it may reach (OUTSIDE_ROUTES must hold
 //    chatgpt>claude-code), the bridge frames its text as untrusted data, and it can never carry Damian's authority.
 //  - Recipients are also limited here (CHATGPT_RECIPIENTS, default claude-code). No shell, file or other tool is exposed.
@@ -26,14 +27,15 @@ const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
 module.exports = function chatgptConnector(d) {
   const env = d.env;
-  const ENABLED = env("CHATGPT_MCP_ENABLED", "") === "1";
+  const SECRET = env("CHATGPT_OAUTH_SECRET", "");
+  const ENABLED = env("CHATGPT_MCP_ENABLED", "") === "1" && SECRET.length >= 32;
   const BASE = env("PUBLIC_BASE_URL", env("RENDER_EXTERNAL_URL", "https://agent-bus-relay.onrender.com")).replace(/\/+$/, "");
   const RESOURCE = BASE + "/mcp";
   const RECIPIENTS = env("CHATGPT_RECIPIENTS", "claude-code").split(",").map((s) => s.trim()).filter(Boolean);
   const GEN = env("CHATGPT_TOKEN_GENERATION", "1");
   const MAX_PER_HOUR = Number(env("CHATGPT_MAX_PER_HOUR", "20"));
   const REDIRECT_HOSTS = env("CHATGPT_REDIRECT_HOSTS", "chatgpt.com").split(",").map((s) => s.trim()).filter(Boolean);
-  const key = d.signing ? crypto.createHmac("sha256", d.signing).update("chatgpt-oauth-v1").digest() : null;
+  const key = SECRET.length >= 32 ? crypto.createHmac("sha256", SECRET).update("chatgpt-oauth-v1").digest() : null;
   const now = () => Math.floor(Date.now() / 1000);
 
   // ---------- signed, stateless tokens ----------
@@ -122,10 +124,10 @@ module.exports = function chatgptConnector(d) {
     return d.send(res, 200, { redirect: u.href });
   }
 
-  function tokens(sub, approvedBy) {
+  function tokens(sub, approvedBy, client) {
     const jti = crypto.randomUUID();
     return { access_token: seal("access", { sub, aud: RESOURCE, scope: SCOPE, ap: approvedBy }, 3600), token_type: "Bearer", expires_in: 3600, scope: SCOPE,
-      refresh_token: seal("refresh", { sub, scope: SCOPE, ap: approvedBy, j: jti }, 30 * 86400) };
+      refresh_token: seal("refresh", { sub, scope: SCOPE, ap: approvedBy, c: client, j: jti }, 30 * 86400) };
   }
   async function token(req, res) {
     let raw = ""; try { raw = await d.readBody(req); } catch (e) { return oauthError(res, 400, "invalid_request", "body too large"); }
@@ -139,13 +141,14 @@ module.exports = function chatgptConnector(d) {
       if (typeof b.code_verifier !== "string" || sha(b.code_verifier) !== c.pk) return oauthError(res, 400, "invalid_grant", "PKCE verification failed");
       usedCodes.add(c.j); if (usedCodes.size > 1000) usedCodes.delete(usedCodes.values().next().value);
       d.audit("chatgpt_token_issued", { grant: "authorization_code", approved_by_message: c.ap });
-      return d.send(res, 200, tokens(c.sub, c.ap));
+      return d.send(res, 200, tokens(c.sub, c.ap, c.c));
     }
     if (b.grant_type === "refresh_token") {
       const r = unseal("refresh", b.refresh_token);
       if (!r || usedRefresh.has(r.j)) return oauthError(res, 400, "invalid_grant", "refresh token invalid, used or expired");
+      if (b.client_id && b.client_id !== r.c) return oauthError(res, 400, "invalid_grant", "refresh token was issued to another client");
       usedRefresh.add(r.j); if (usedRefresh.size > 5000) usedRefresh.delete(usedRefresh.values().next().value);
-      return d.send(res, 200, tokens(r.sub, r.ap));
+      return d.send(res, 200, tokens(r.sub, r.ap, r.c));
     }
     return oauthError(res, 400, "unsupported_grant_type", "authorization_code or refresh_token");
   }
@@ -206,7 +209,7 @@ module.exports = function chatgptConnector(d) {
     const message = typeof args.message === "string" ? args.message.trim() : "";
     const idem = String(args.idempotency_key || "");
     const to = String(args.recipient || RECIPIENTS[0]);
-    const wait = Math.min(45, Math.max(0, Number.isFinite(args.wait_seconds) ? args.wait_seconds : 40));
+    const wait = Math.min(45, Math.max(0, Number.isFinite(args.wait_seconds) ? args.wait_seconds : 25));
     if (!message || message.length > 2500) return fail("invalid_message", "message must be 1-2500 characters");
     if (!/^[A-Za-z0-9_-]{8,100}$/.test(idem)) return fail("invalid_idempotency_key", "8-100 letters, digits, - or _");
     if (!RECIPIENTS.includes(to)) return fail("recipient_not_allowed", "ChatGPT may only reach: " + RECIPIENTS.join(", "));
@@ -254,7 +257,7 @@ module.exports = function chatgptConnector(d) {
         message: { type: "string", minLength: 1, maxLength: 2500, description: "What to ask Claude Code." },
         idempotency_key: { type: "string", pattern: "^[A-Za-z0-9_-]{8,100}$", description: "Unique per question; reuse only to retry the same question." },
         recipient: { type: "string", enum: RECIPIENTS, default: RECIPIENTS[0] },
-        wait_seconds: { type: "integer", minimum: 0, maximum: 45, default: 40, description: "How long to wait for the reply before returning pending." } } },
+        wait_seconds: { type: "integer", minimum: 0, maximum: 45, default: 25, description: "How long to wait for the reply before returning pending." } } },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }, securitySchemes: security, _meta: { securitySchemes: security } },
     { name: "get_claude_code_response", title: "Get Claude Code response",
       description: "Read the status and reply for a request sent with ask_claude_code, by correlation_id.",
@@ -288,6 +291,8 @@ module.exports = function chatgptConnector(d) {
   }
   async function mcp(req, res) {
     if (req.method !== "POST") { res.writeHead(405, { Allow: "POST" }); return res.end(); }
+    const origin = req.headers.origin;
+    if (origin && !REDIRECT_HOSTS.some((h) => origin === "https://" + h)) { d.audit("refused", { from: AGENT, code: "bad_origin" }); return d.send(res, 403, { error: "origin_not_allowed" }); }
     const p = principal(req);
     if (!p || d.blocked.has(AGENT)) {
       d.audit("unauthorized", { path: "/mcp", reason: p ? "cut_off" : "no_valid_token" });

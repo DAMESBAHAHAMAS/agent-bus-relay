@@ -3,85 +3,137 @@
 Project owner: Damian. Assigned 2026-10-18 to a separate Claude Code session. Branch `chatgpt-claude-connector`
 (worktree `~/Developer/agent-bus-relay-chatgpt`). This file is the resume point: read it first, do not repeat discovery.
 
-## State as of 2026-10-18
-| Stage | State |
+## Damian's conditions (2026-10-18, second instruction)
+Prepare for deployment only. A dedicated OAuth secret stored in Render (no derivation from the bus secret). Validate against OpenAI's
+current MCP authorization spec. Verify his ChatGPT plan permits the `ask_claude_code` (write) tool, without assuming. Keep the connector
+disabled. Prepare exact Render changes and a rollback. NO deploy, routing change or bridge restart until the checks are complete.
+Coordinate the merge with Codex and keep the branch.
+
+## State as of 2026-10-18 12:55 EDT
+| Item | State |
 |---|---|
-| A. Discovery | DONE (below) |
-| B. Interface | DONE on branch, offline tests 9/9 pass. NOT deployed. |
-| C. Authentication | DONE on branch (OAuth 2.1 + PKCE, approval by Damian in Cliq). NOT live. |
-| Claude Code side | LIVE: `~/.agent-bus/claude-code/` has read-only project context; live bus test answered (below). |
-| D. End-to-end with real ChatGPT | NOT DONE. Blocked on Damian's approvals 1-4 below. |
+| Discovery | DONE (below) |
+| Connector code, dedicated secret, off by default | DONE on branch. Not merged, not deployed. |
+| OpenAI OAuth checklist | PASSED offline (table below). One item is accepted by design: mTLS client-cert check (see the table). |
+| Official MCP SDK client conformance | PASSED offline (SDK 1.29.0: discovery, DCR, PKCE S256, resource, token, tools/call) |
+| Tests | `node --test chatgpt/test/` gives 15/15 pass |
+| ChatGPT plan permits a write tool | NOT VERIFIED. Plan = Plus. OpenAI's docs conflict (below). Needs Damian's in-app check. |
+| Render changes and rollback | PREPARED as `bus-admin.py chatgpt …`. `plan` (read-only) run; nothing changed on Render. |
+| Claude Code side | LIVE: read-only project context in `~/.agent-bus/claude-code/`; live bus test answered |
+| End-to-end with real ChatGPT | NOT DONE: needs activation approvals |
 
 ## Discovery findings
-- The relay (`server.js`, Render `agent-bus-relay`, public HTTPS) is the only door to `#agent-bus`. Identity comes from a service key, never
-  from the body. Every message is an HMAC-signed envelope in Cliq (permanent audit), with correlation ids and an ack ledger (`/status`).
-- Outside agents (`EXTERNAL_AGENTS`) may reach only `FRONT_DOOR` (bizops) plus `OUTSIDE_ROUTES`. The bridge frames their text as untrusted data.
-- `claude-code` is already a bus agent. The Mac bridge wakes it as `claude -p --tools "" --strict-mcp-config` (no tools, no MCP),
-  cwd `~/.agent-bus/claude-code`, which was empty, so it knew nothing about any project.
-- `gpt` on the bus is an OpenClaw agent, not ChatGPT. Codex's `welcomeiq/chatgpt.mjs` (uncommitted on main) is a different, unactivated
-  ChatGPT→Codex adapter that needs an external OAuth issuer that does not exist. This work does not touch it.
-- ChatGPT: per OpenAI's Plugins/Apps auth doc (developers.openai.com/plugins/build/auth), remote MCP servers accept OAuth 2.1 with PKCE S256
-  (DCR or CIMD), or no auth. ChatGPT cannot send static API keys. No auth would be a public unauthenticated endpoint, so OAuth is required.
-  Custom GPT Actions do accept bearer API keys, but OpenAI is retiring custom GPTs, so that path is not used.
-- In non-interactive `claude -p`, CLAUDE.md `@imports` of files outside the cwd (and symlinks to them) are NOT loaded; files inside it are.
+- The relay (`server.js`, Render `agent-bus-relay`, public HTTPS) is the only door to `#agent-bus`. Identity comes from a service key.
+  Every message is an HMAC-signed envelope in Cliq (permanent audit), with correlation ids and an ack ledger.
+- Outside agents (`EXTERNAL_AGENTS` = muse,gpt) reach only `FRONT_DOOR` (bizops) plus `OUTSIDE_ROUTES`. Render does not set
+  OUTSIDE_ROUTES today, so the code default `muse>maryalice` applies (checked 2026-10-18 with the Render API).
+- `claude-code` is a bus agent. The bridge wakes it as `claude -p --tools "" --strict-mcp-config` in `~/.agent-bus/claude-code` (no tools).
+- `gpt` on the bus is an OpenClaw agent, not ChatGPT. Codex's `welcomeiq/chatgpt.mjs` is a separate, unactivated ChatGPT→Codex adapter.
+- In `claude -p`, CLAUDE.md `@imports` of files outside the cwd (or symlinks to them) are not loaded; files inside it are.
+- ChatGPT remote MCP auth: OAuth 2.1 + PKCE (CIMD, DCR or predefined client), or no auth. No static API keys.
+  (developers.openai.com/plugins/build/auth). Custom GPT Actions take API keys but custom GPTs are being retired.
+- OpenAI also offers a Secure MCP Tunnel (developers.openai.com/api/docs/guides/secure-mcp-tunnels): ChatGPT reaches a PRIVATE MCP server
+  through an outbound `tunnel-client`. It needs a Platform organization API key for the tunnel-client and a new Mac service. It is an
+  alternative if Damian prefers no new public routes; not built.
 
-## Architecture (shortest supported path, no new service)
+## Architecture
 ```
-ChatGPT (developer-mode app / MCP connector)
-  -> POST https://agent-bus-relay.onrender.com/mcp      OAuth bearer, scope claude.ask
+ChatGPT (developer-mode custom MCP server)
+  -> POST https://agent-bus-relay.onrender.com/mcp      OAuth bearer, scope claude.ask, aud = that URL
   -> relay posts a signed request: from "chatgpt" (OUTSIDE agent) to "claude-code", correlation_id cgpt-<hash of idempotency key>
   -> Mac bridge wakes claude-code (no tools) with read-only project copies
-  -> claude-code's own reply is posted on the bus
-  -> relay wakes the waiting MCP call, or ChatGPT polls get_claude_code_response
+  -> claude-code's own reply on the bus wakes the waiting MCP call (or ChatGPT polls get_claude_code_response)
 ```
-Files: `chatgpt/connector.js` (new), `server.js` (+5 lines), `bridge/bus-bridge.js` (+13 lines: `refreshContext`), `chatgpt/test/local.test.js`.
+Changed files on the branch: `chatgpt/connector.js` (new), `chatgpt/test/local.test.js` (new), `server.js` (+6),
+`bridge/bus-bridge.js` (+13, `refreshContext`), `admin/bus-admin.py` (`chatgpt` commands, persistent cutoff), this file.
 
-MCP tools:
-- `ask_claude_code {message, idempotency_key, recipient=claude-code, wait_seconds<=45}` returns `{correlation_id, state, response, error,
-  requested_at, responded_at, request_message_id, response_message_id, duplicate}`.
-- `get_claude_code_response {correlation_id, wait_seconds}` returns the same.
-- States: pending, answered, completed, blocked, failed (WAKE FAILED), escalated (no ack in 10 min).
+Tools: `ask_claude_code {message, idempotency_key, recipient=claude-code, wait_seconds<=45, default 25}` and
+`get_claude_code_response {correlation_id, wait_seconds}`. Both return correlation_id, state (pending | answered | completed | blocked |
+failed | escalated), response, error, requested_at, responded_at, request_message_id, response_message_id. `ask_claude_code` is
+annotated readOnlyHint=false, honestly: it posts a request.
 
-## Controls
-- AuthN: OAuth 2.1, PKCE S256 mandatory, DCR limited to https redirect URIs on chatgpt.com, single-use 5-minute codes, 1-hour access tokens,
-  rotating 30-day refresh tokens, audience = the /mcp URL, RFC 9207 `iss` returned.
-- Sign-in approval: the /oauth/authorize page shows a code. A token is issued only after `approve chatgpt <code>` is typed in #agent-bus from
-  Damian's own Cliq account (DAMIAN_CLIQ_IDS). The Cliq alert to Damian never contains the code. At most 5 pending, 10-minute expiry.
-- Keys: token MAC key = HMAC(BUS_SIGNING_SECRET, "chatgpt-oauth-v1"). No new secret. Revoke all: raise `CHATGPT_TOKEN_GENERATION`.
-  Stop now: `python3 admin/bus-admin.py cutoff chatgpt`.
-- AuthZ: one principal (damian). Recipients `CHATGPT_RECIPIENTS` (default claude-code) AND the relay's own `routeDenied` (needs
-  `OUTSIDE_ROUTES` to contain `chatgpt>claude-code`). Outside class: no broadcast, no Damian authority, untrusted framing.
-- Least privilege: two tools only. No shell, file or other agent access. claude-code keeps `--tools ""`.
-- Replay/idempotency: correlation_id derived from the idempotency key. A retry returns the original. Same key with a different message
-  returns `idempotency_conflict`. The bridge runs each agent+id at most once (its done-set).
-- Limits: relay 20 posts/min per agent, `CHATGPT_MAX_PER_HOUR` (20), the loop guardrail, bridge `BUS_RUN_TIMEOUT_S` (300), tool wait ≤45s.
-- Leakage: the relay's secret filter is applied to the message. Replies to an outside agent also pass the SSN/EIN/card filter.
-- Audit: the request and reply are signed messages in #agent-bus. Relay audit events: chatgpt_signin_started/approved, chatgpt_token_issued,
-  chatgpt_request, chatgpt_duplicate_suppressed, refused, unauthorized.
-- Off by default: without `CHATGPT_MCP_ENABLED=1`, all new paths return 404 exactly as today.
+## OpenAI OAuth checklist (developers.openai.com/plugins/build/auth), checked 2026-10-18
+| Requirement | Implementation | Evidence |
+|---|---|---|
+| Protected resource metadata at /.well-known/oauth-protected-resource (and the /mcp suffix) with `resource`, `authorization_servers` | Both paths, identical | test "OpenAI checklist" |
+| AS metadata at /.well-known/oauth-authorization-server; `issuer` identical to `authorization_servers[0]` | Yes | same |
+| `code_challenge_methods_supported` includes S256; PKCE enforced | S256 only; plain and missing are refused; wrong verifier refused | tests |
+| `token_endpoint_auth_methods_supported` | `["none"]` (public client + PKCE) | test |
+| Client identification | DCR (`registration_endpoint`). CIMD not advertised, so ChatGPT uses DCR (doc: DCR is used when CIMD is unavailable) | SDK test registers via DCR |
+| Redirect URIs | DCR accepts only https URIs on chatgpt.com, no port and no userinfo; covers both `/connector_platform_oauth_redirect` and `/connector/oauth/{callback_id}` | test (4 hostile URIs refused) |
+| RFC 9207 `iss` | Advertised; `iss` returned on every success and error redirect, exactly the issuer string | tests |
+| `resource` on authorize and token; audience | A mismatched resource is refused on both; the token `aud` = the /mcp URL and is checked on every request | tests |
+| Refresh tokens | Issued; rotated on use; reuse refused; bound to the client; 30 days; revoked by a generation bump or secret rotation | tests |
+| Scopes | `claude.ask` only; no OIDC scopes advertised (ChatGPT would request them) | test |
+| 401 challenge | `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp", scope="claude.ask"` | test |
+| Per-tool securitySchemes | `[{type:"oauth2",scopes:["claude.ask"]}]` on both tools (and `_meta`) | test |
+| Token verification on every call | HMAC signature, kind, generation, exp, sub, aud, scope, cut-off list | tests |
+| mTLS client cert from OpenAI | NOT checked: Render terminates TLS, so the relay cannot see the client certificate. The doc lists mTLS as a way to authenticate ChatGPT as the client; user authorization is the OAuth token, which is enforced. Optional hardening: allowlist ChatGPT's published egress IP ranges. | n/a |
+| MCP transport: Origin validation | A browser Origin other than https://chatgpt.com is refused (403) | test |
+| Official client interoperability | MCP TypeScript SDK 1.29.0 `auth()` + StreamableHTTPClientTransport complete discovery → DCR → PKCE → token → listTools → callTool | test |
+
+Known residual risks (for Damian to accept):
+- Refresh-token reuse detection is held in memory. After a relay restart, an already-used refresh token could be replayed once within
+  its 30 days. Mitigations: tokens are only ever issued to chatgpt.com redirects after Damian's Cliq approval; `revoke-tokens` revokes all.
+- Rate-limit and idempotency memory also reset on restart. Duplicate execution is still prevented by the bus (deterministic correlation id
+  plus the bridge's done-set), and the 20/min and loop limits are recomputed.
+- The hand-rolled HMAC tokens are not JWTs from an identity provider. OpenAI recommends SDK helpers; the verification path is covered by tests.
+
+## ChatGPT plan check (condition 4): NOT VERIFIED
+- Damian's ChatGPT plan is **Plus**, from the `chatgpt_plan_type` claim of the local Codex sign-in, issued 2026-10-18 04:56. Only that claim was read; no token was printed or copied.
+- OpenAI's help article "Developer mode and MCP apps in ChatGPT" (help.openai.com/en/articles/12584461) says full MCP, including
+  write/modify actions, is in beta for Business, Enterprise and Edu. September 2025 launch coverage said Plus and Pro had write actions in
+  developer mode. A 2026 third-party guide notes that the docs conflict. The help center blocks automated reads, so this was not confirmed first-hand.
+- Conclusion: it cannot be assumed that Plus permits `ask_claude_code`. A non-destructive in-app check by Damian settles it (below).
+- If Plus does not permit write tools: (a) a Business workspace, which is a paid plan change and needs Damian's decision; or (b) Codex,
+  which Damian already has: Codex accepts remote MCP with a bearer token or OAuth, so the same /mcp works from Codex, but that is not a ChatGPT
+  chat. Making `ask_claude_code` look read-only to bypass the limit is rejected: it would be a false annotation.
+
+## Render changes (exact) and rollback
+All through `python3 admin/bus-admin.py chatgpt <step>` (reads the Render API key from Keychain by reference; never prints a secret):
+| Step | Render change | Redeploy |
+|---|---|---|
+| `plan` | none (read-only) | no |
+| `stage-secret` | `CHATGPT_OAUTH_SECRET` = 48 random bytes (urlsafe), also kept in Keychain `agent-bus-chatgpt-oauth-secret` | no |
+| `activate` | `CHATGPT_MCP_ENABLED=1`, `OUTSIDE_ROUTES=muse>maryalice,chatgpt>claude-code` | yes, then checks PRM 200 and /mcp 401 |
+| `rollback` | `CHATGPT_MCP_ENABLED=0`, `OUTSIDE_ROUTES=muse>maryalice` | yes, then checks both 404 |
+| `revoke-tokens` | `CHATGPT_TOKEN_GENERATION` + 1 | yes |
+| `cutoff chatgpt` / `restore chatgpt` | at once on the running relay, then `CHATGPT_MCP_ENABLED` 0/1 so it holds across restarts | yes |
+Output of `plan` on 2026-10-18: CHATGPT_* all absent; OUTSIDE_ROUTES unset (code default muse>maryalice); Keychain secret absent.
+
+Rollback levels: (1) `cutoff chatgpt`: seconds. (2) `chatgpt rollback`: connector off, route removed, every path 404.
+(3) Code: `git revert <merge commit>` on main and push; Render redeploys the previous relay. (4) Bridge: the `refreshContext` change is
+inert without `context-sources.json`; `mv ~/.agent-bus/claude-code/context-sources.json{,.off}` disables it with no restart.
+
+## Merge coordination with Codex
+- main is still d9df86c. This branch is d9df86c plus its own commits, so it merges as a fast-forward.
+- Codex's uncommitted edits on main (server.js +3, bridge +16, .gitignore) apply cleanly on top of this branch (checked with
+  `git apply --check`). Codex's server.js hook `require`s `welcomeiq/relay.cjs`, which is untracked. If Codex commits server.js without
+  that file, the relay will fail to start on Render. Codex should commit both together, or neither.
+- The bridge restart (needed for `refreshContext`) also loads Codex's inert WelcomeIQ hook. Agree the timing with Codex.
+- Coordination note left at `ops/COORDINATION-chatgpt-connector.md` in the main checkout (new, untracked file; no Codex file edited).
 
 ## Evidence
-- Offline (real server.js against a mock Cliq): `node --test chatgpt/test/` gives 9/9 pass: metadata; 401 with resource_metadata for no or
-  forged token; foreign redirect refused; a stranger's approval ignored; Damian's approval completes OAuth; wrong PKCE verifier, code reuse
-  and refresh reuse refused; initialize and tools/list; ask → claude-code → correlated reply; retry is a duplicate with exactly 1 execution;
-  idempotency conflict; recipient finance refused; secret refused; cutoff gives 401 at once, restore gives 200.
-- Live Claude Code path (2026-10-18): `bus-send.js --as ops --to claude-code` correlation_id 0468bf4f-42f2-4d6c-8325-402a01f1fc0a,
-  delivered_to_waiting_listener, acknowledged by claude-code after 10 s with a correct WelcomeIQ status from the records, STATUS: COMPLETE.
-- `~/.agent-bus/claude-code/`: CLAUDE.md (imports two local copies), context-sources.json (allowlist), welcomeiq-STATUS.md and
-  welcomeiq-HANDOFF.md (snapshot copied 2026-10-18 ~12:17 EDT, until the bridge refresh is live).
+- Offline tests (real server.js against a mock Cliq), 15/15 pass on 2026-10-18 12:50 EDT. They cover: the checklist metadata; 401 challenge for
+  no and forged tokens; 4 hostile redirect URIs; iss on error redirects; invalid_target; PKCE plain refused; a stranger's approval ignored;
+  Damian's approval → iss, state, wrong verifier, wrong resource, code reuse, client-bound rotating refresh, refresh reuse; initialize and
+  tools/list with securitySchemes and an honest readOnlyHint; Origin; ask → claude-code → correlated reply, retry = duplicate with 1
+  execution, idempotency conflict; recipient finance refused; secret refused; cutoff and restore; a token is useless under another secret;
+  the connector is off (404) without the switch, without the secret, or with a short secret; the relay's own route check refuses without the
+  OUTSIDE_ROUTES grant; the official MCP SDK client end to end.
+- Live Claude Code path: `bus-send.js --as ops --to claude-code` correlation_id 0468bf4f-42f2-4d6c-8325-402a01f1fc0a,
+  delivered_to_waiting_listener, answered by claude-code after 10 s with the WelcomeIQ status from the records, STATUS: COMPLETE.
+- `~/.agent-bus/claude-code/`: CLAUDE.md, context-sources.json, copies of welcomeiq STATUS and HANDOFF (refreshed by hand at 12:54 EDT;
+  they refresh automatically once the bridge runs the branch code).
 
-## Needs Damian's approval (in order)
-1. Deploy: merge `chatgpt-claude-connector` to main so Render deploys. This adds public routes /mcp, /oauth/*, /.well-known/oauth-*
-   to the existing relay (inert until step 2).
-2. Render env (routing/authority change): `CHATGPT_MCP_ENABLED=1`; `OUTSIDE_ROUTES=muse>maryalice,chatgpt>claude-code` (keep Muse's route).
-3. Restart the bridge so `refreshContext` keeps the copies current (`launchctl kickstart -k gui/$(id -u)/com.damianknowles.agent-bus-bridge`).
-   Note: the main checkout holds Codex's uncommitted, inert WelcomeIQ bridge hook. Coordinate the merge and restart with Codex.
-4. In ChatGPT (Damian, his account): Settings → Apps/Plugins → Advanced → Developer mode on; Create app: name "Claude Code (agent bus)",
-   URL `https://agent-bus-relay.onrender.com/mcp`, Authentication OAuth (dynamic registration). In the sign-in page, type the code it shows
-   in #agent-bus as `approve chatgpt XXXX-XXXX`. Developer mode availability depends on the ChatGPT plan; confirm in the settings.
-5. Optional, later: give claude-code read-only tools for a scoped folder so it can "execute work". This expands permissions and is NOT proposed now.
-
-## Acceptance test (after 1-4)
-In ChatGPT: "Ask Claude Code for the status of the WelcomeIQ project." Expect the tool call `ask_claude_code`, a `cgpt-…` correlation_id,
-the same id in #agent-bus (request from chatgpt, ack from claude-code), and the answer. Then: retry with the same key (duplicate=true, no
-second bus request); ask for recipient finance (recipient_not_allowed); call /mcp with no token (401); `cutoff chatgpt` (401), `restore`.
+## Remaining approvals for activation (in order)
+0. Damian's in-app plan check (no cost): ChatGPT on the web → Settings → Apps (or Plugins) → Advanced → is "Developer mode" offered, and
+   does "Add custom MCP server" (Create) appear? If not, choose between Business, Codex, or stopping.
+1. `chatgpt stage-secret`: creates the dedicated secret (CLAUDE.md escalation rule 3).
+2. Merge the branch to main (fast-forward), coordinated with Codex; Render deploys the code, which stays off.
+3. `chatgpt activate`: turns it on and adds the chatgpt>claude-code route (security control / routing, rule 4).
+4. Bridge restart at an agreed time with Codex.
+5. Damian creates the custom MCP server in ChatGPT: URL `https://agent-bus-relay.onrender.com/mcp`, Authentication OAuth, and approves
+   the sign-in by typing `approve chatgpt XXXX-XXXX` (the code shown on the page) in #agent-bus.
+6. Acceptance: "Ask Claude Code for the status of the WelcomeIQ project." Check that the cgpt- id appears in #agent-bus (request from chatgpt,
+   ack from claude-code); a retry gives duplicate=true; recipient finance is refused; /mcp with no token gives 401; cutoff, then restore.

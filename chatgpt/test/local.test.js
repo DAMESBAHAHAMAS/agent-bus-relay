@@ -1,13 +1,16 @@
 // Offline proof of the ChatGPT connector: the REAL relay (server.js) runs against a mock Zoho/Cliq on localhost.
 // No real credential, channel or agent is touched. Run: node --test chatgpt/test/
+// The official MCP SDK client test runs when @modelcontextprotocol/sdk is found (MCP_SDK_DIR, or the copy under welcomeiq/).
 const { test, before, after } = require("node:test");
 const assert = require("node:assert");
 const http = require("node:http");
+const fs = require("node:fs");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
 const path = require("node:path");
 
 const DAMIAN = "111", STRANGER = "999", CC_KEY = "test-key-claude-code", OPS_KEY = "test-key-ops";
+const OAUTH_SECRET = crypto.randomBytes(32).toString("base64url");
 const msgs = []; let seq = 0;
 const mock = http.createServer((req, res) => {
   let body = ""; req.on("data", (c) => (body += c));
@@ -24,89 +27,117 @@ const mock = http.createServer((req, res) => {
 });
 const human = (sender, text) => msgs.push({ id: String(++seq), time: Date.now(), sender: { id: sender, name: "x" }, content: { text } });
 
-let relay, B;
-const port = 18000 + Math.floor(Math.random() * 1000);
-before(async () => {
-  await new Promise((r) => mock.listen(0, r));
-  const M = "http://127.0.0.1:" + mock.address().port;
-  B = "http://127.0.0.1:" + port;
-  relay = spawn(process.execPath, [path.join(__dirname, "../../server.js")], { stdio: "ignore", env: Object.assign({}, process.env, {
+const relays = [];
+async function startRelay(extra) {
+  const port = 18000 + Math.floor(Math.random() * 1000) + relays.length * 1000;
+  const base = "http://127.0.0.1:" + port, M = "http://127.0.0.1:" + mock.address().port;
+  const p = spawn(process.execPath, [path.join(__dirname, "../../server.js")], { stdio: "ignore", env: Object.assign({}, process.env, {
     PORT: String(port), ZOHO_ACCOUNTS_URL: M, CLIQ_API_BASE: M, CHANNEL_UNIQUE_NAME: "agentbus", CHANNEL_CHAT_ID: "CT_1",
     SERVICE_KEYS: "claude-code:" + CC_KEY + ",ops:" + OPS_KEY, ADMIN_AGENTS: "ops", EXTERNAL_AGENTS: "muse", DAMIAN_CLIQ_IDS: DAMIAN,
     BUS_SIGNING_SECRET: "test-signing-secret", POLL_MS: "5000", OUTSIDE_ROUTES: "muse>maryalice,chatgpt>claude-code",
-    CHATGPT_MCP_ENABLED: "1", PUBLIC_BASE_URL: B }) });
-  for (let i = 0; i < 50; i++) { try { if ((await fetch(B + "/healthz")).ok) return; } catch (e) {} await new Promise((r) => setTimeout(r, 100)); }
+    CHATGPT_MCP_ENABLED: "1", CHATGPT_OAUTH_SECRET: OAUTH_SECRET, PUBLIC_BASE_URL: base }, extra) });
+  relays.push(p);
+  for (let i = 0; i < 50; i++) { try { if ((await fetch(base + "/healthz")).ok) return base; } catch (e) {} await new Promise((r) => setTimeout(r, 100)); }
   throw Error("relay did not start");
-});
-after(() => { relay.kill(); mock.close(); });
+}
+let B;
+before(async () => { await new Promise((r) => mock.listen(0, r)); B = await startRelay({}); });
+after(() => { for (const p of relays) p.kill(); mock.close(); });
 
 const REDIRECT = "https://chatgpt.com/connector_platform_oauth_redirect";
-let access, refresh;
-async function signIn(approver) {
-  const reg = await (await fetch(B + "/oauth/register", { method: "POST", body: JSON.stringify({ redirect_uris: [REDIRECT], client_name: "ChatGPT" }) })).json();
-  const verifier = crypto.randomBytes(32).toString("base64url");
-  const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
-  const q = new URLSearchParams({ response_type: "code", client_id: reg.client_id, redirect_uri: REDIRECT, code_challenge: challenge, code_challenge_method: "S256", state: "st", resource: B + "/mcp", scope: "claude.ask" });
-  const html = await (await fetch(B + "/oauth/authorize?" + q)).text();
+const form = (o) => ({ method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(o).toString() });
+async function approveFromPage(base, authUrl, approver) {
+  const html = await (await fetch(authUrl)).text();
   const code = html.match(/approve chatgpt ([A-Z0-9]{4}-[A-Z0-9]{4})/)[1];
   const id = html.match(/const id="([^"]+)"/)[1];
-  assert.deepStrictEqual(await (await fetch(B + "/oauth/approval?id=" + id)).json(), { waiting: true });
+  assert.deepStrictEqual(await (await fetch(base + "/oauth/approval?id=" + id)).json(), { waiting: true });
   human(approver, "approve chatgpt " + code);
-  await new Promise((r) => setTimeout(r, 5200));   // relay re-reads the channel
-  return { reg, verifier, id };
+  let last;   // poll like the sign-in page does; the relay re-reads the channel at most every 10 seconds
+  for (let i = 0; i < 6; i++) { await new Promise((r) => setTimeout(r, 2500)); last = await (await fetch(base + "/oauth/approval?id=" + id)).json(); if (!last.waiting) break; }
+  return last;
 }
-async function mcp(method, params, token) {
-  const r = await fetch(B + "/mcp", { method: "POST", headers: Object.assign({ "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, token ? { Authorization: "Bearer " + token } : {}),
+async function startSignIn(base, extraQuery) {
+  const reg = await (await fetch(base + "/oauth/register", { method: "POST", body: JSON.stringify({ redirect_uris: [REDIRECT], client_name: "ChatGPT" }) })).json();
+  const verifier = crypto.randomBytes(32).toString("base64url");
+  const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
+  const q = new URLSearchParams(Object.assign({ response_type: "code", client_id: reg.client_id, redirect_uri: REDIRECT, code_challenge: challenge, code_challenge_method: "S256", state: "st", resource: base + "/mcp", scope: "claude.ask" }, extraQuery));
+  return { reg, verifier, url: base + "/oauth/authorize?" + q };
+}
+async function mcp(base, method, params, token, headers) {
+  const r = await fetch(base + "/mcp", { method: "POST", headers: Object.assign({ "Content-Type": "application/json", Accept: "application/json, text/event-stream" }, token ? { Authorization: "Bearer " + token } : {}, headers || {}),
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
   return { status: r.status, headers: r.headers, json: await r.json().catch(() => null) };
 }
+let access;
 
-test("discovery metadata advertises OAuth with PKCE S256 and the MCP resource", async () => {
+test("OpenAI checklist: resource and authorization server metadata", async () => {
+  const prmRoot = await (await fetch(B + "/.well-known/oauth-protected-resource")).json();
   const prm = await (await fetch(B + "/.well-known/oauth-protected-resource/mcp")).json();
-  assert.strictEqual(prm.resource, B + "/mcp");
   const asm = await (await fetch(B + "/.well-known/oauth-authorization-server")).json();
-  assert.deepStrictEqual(asm.code_challenge_methods_supported, ["S256"]);
+  assert.deepStrictEqual(prmRoot, prm);
+  assert.strictEqual(prm.resource, B + "/mcp");
+  assert.strictEqual(prm.authorization_servers[0], asm.issuer, "issuer string identical in both documents");
+  for (const k of ["authorization_endpoint", "token_endpoint", "registration_endpoint"]) assert.ok(asm[k].startsWith(asm.issuer + "/"), k);
+  assert.ok(asm.code_challenge_methods_supported.includes("S256"));
+  assert.deepStrictEqual(asm.token_endpoint_auth_methods_supported, ["none"]);
+  assert.strictEqual(asm.authorization_response_iss_parameter_supported, true);
+  assert.ok(!asm.scopes_supported.some((s) => ["openid", "email", "profile"].includes(s)), "no OIDC scopes advertised");
 });
-test("unauthenticated and forged requests are rejected with a resource_metadata challenge", async () => {
-  const r = await mcp("tools/list", {});
+test("unauthenticated and forged requests get 401 with a resource_metadata challenge", async () => {
+  const r = await mcp(B, "tools/list", {});
   assert.strictEqual(r.status, 401);
-  assert.match(r.headers.get("www-authenticate"), /resource_metadata=/);
-  assert.strictEqual((await mcp("tools/list", {}, "cgpt.eyJrIjoiYWNjZXNzIn0.forged")).status, 401);
+  assert.match(r.headers.get("www-authenticate"), /^Bearer resource_metadata="[^"]+\/\.well-known\/oauth-protected-resource\/mcp"/);
+  assert.strictEqual((await mcp(B, "tools/list", {}, "cgpt.eyJrIjoiYWNjZXNzIn0.forged")).status, 401);
 });
 test("client registration refuses redirect addresses outside chatgpt.com", async () => {
-  const r = await fetch(B + "/oauth/register", { method: "POST", body: JSON.stringify({ redirect_uris: ["https://evil.example/cb"] }) });
-  assert.strictEqual(r.status, 400);
+  for (const u of ["https://evil.example/cb", "http://chatgpt.com/cb", "https://chatgpt.com:8443/cb", "https://chatgpt.com.evil.example/cb"])
+    assert.strictEqual((await fetch(B + "/oauth/register", { method: "POST", body: JSON.stringify({ redirect_uris: [u] }) })).status, 400, u);
+});
+test("authorization errors redirect with iss equal to the issuer; wrong resource and missing PKCE are refused", async () => {
+  const { url } = await startSignIn(B, { resource: "https://other.example/mcp" });
+  const r = await fetch(url, { redirect: "manual" });
+  const loc = new URL(r.headers.get("location"));
+  assert.strictEqual(loc.searchParams.get("error"), "invalid_target"); assert.strictEqual(loc.searchParams.get("iss"), B);
+  const p = await startSignIn(B, { code_challenge_method: "plain" });
+  assert.strictEqual(new URL((await fetch(p.url, { redirect: "manual" })).headers.get("location")).searchParams.get("error"), "invalid_request");
 });
 test("a sign-in approved by someone other than Damian is never granted", async () => {
-  const { id } = await signIn(STRANGER);
-  assert.deepStrictEqual(await (await fetch(B + "/oauth/approval?id=" + id)).json(), { waiting: true });
+  const { url } = await startSignIn(B, {});
+  assert.deepStrictEqual(await approveFromPage(B, url, STRANGER), { waiting: true });
 });
-test("Damian's Cliq approval completes OAuth; PKCE and single-use codes are enforced", async () => {
-  const { reg, verifier, id } = await signIn(DAMIAN);
-  const a = await (await fetch(B + "/oauth/approval?id=" + id)).json();
+test("Damian's Cliq approval completes OAuth: iss, PKCE, audience, single-use codes, rotating client-bound refresh", async () => {
+  const { reg, verifier, url } = await startSignIn(B, {});
+  const a = await approveFromPage(B, url, DAMIAN);
   const u = new URL(a.redirect);
-  assert.strictEqual(u.origin + u.pathname, REDIRECT); assert.strictEqual(u.searchParams.get("state"), "st");
-  const form = (o) => ({ method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(o).toString() });
-  const base = { grant_type: "authorization_code", code: u.searchParams.get("code"), client_id: reg.client_id, redirect_uri: REDIRECT };
+  assert.strictEqual(u.origin + u.pathname, REDIRECT); assert.strictEqual(u.searchParams.get("state"), "st"); assert.strictEqual(u.searchParams.get("iss"), B);
+  const base = { grant_type: "authorization_code", code: u.searchParams.get("code"), client_id: reg.client_id, redirect_uri: REDIRECT, resource: B + "/mcp" };
   assert.strictEqual((await fetch(B + "/oauth/token", form(Object.assign({}, base, { code_verifier: "wrong-verifier-wrong-verifier-wrong-verifier" })))).status, 400);
+  assert.strictEqual((await fetch(B + "/oauth/token", form(Object.assign({}, base, { resource: "https://other.example/mcp", code_verifier: verifier })))).status, 400, "audience");
   const t = await (await fetch(B + "/oauth/token", form(Object.assign({}, base, { code_verifier: verifier })))).json();
-  assert.ok(t.access_token && t.refresh_token);
+  assert.ok(t.access_token && t.refresh_token); assert.strictEqual(t.token_type, "Bearer");
+  assert.strictEqual(JSON.parse(Buffer.from(t.access_token.split(".")[1], "base64url")).aud, B + "/mcp");
   assert.strictEqual((await fetch(B + "/oauth/token", form(Object.assign({}, base, { code_verifier: verifier })))).status, 400, "code reuse");
-  const t2 = await (await fetch(B + "/oauth/token", form({ grant_type: "refresh_token", refresh_token: t.refresh_token }))).json();
-  assert.ok(t2.access_token);
+  assert.strictEqual((await fetch(B + "/oauth/token", form({ grant_type: "refresh_token", refresh_token: t.refresh_token, client_id: "someone-else" }))).status, 400, "client binding");
+  const t2 = await (await fetch(B + "/oauth/token", form({ grant_type: "refresh_token", refresh_token: t.refresh_token, client_id: reg.client_id, resource: B + "/mcp" }))).json();
+  assert.ok(t2.access_token && t2.refresh_token !== t.refresh_token, "rotated");
   assert.strictEqual((await fetch(B + "/oauth/token", form({ grant_type: "refresh_token", refresh_token: t.refresh_token }))).status, 400, "refresh reuse");
-  access = t2.access_token; refresh = t2.refresh_token;
+  access = t2.access_token;
 });
-test("MCP: initialize and tools/list", async () => {
-  const i = await mcp("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } }, access);
+test("MCP: initialize, tools/list with oauth2 securitySchemes, honest annotations", async () => {
+  const i = await mcp(B, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } }, access);
   assert.strictEqual(i.json.result.protocolVersion, "2025-06-18");
-  const l = await mcp("tools/list", {}, access);
-  assert.deepStrictEqual(l.json.result.tools.map((t) => t.name), ["ask_claude_code", "get_claude_code_response"]);
+  const tools = (await mcp(B, "tools/list", {}, access)).json.result.tools;
+  assert.deepStrictEqual(tools.map((t) => t.name), ["ask_claude_code", "get_claude_code_response"]);
+  for (const t of tools) assert.deepStrictEqual(t.securitySchemes, [{ type: "oauth2", scopes: ["claude.ask"] }]);
+  assert.strictEqual(tools[0].annotations.readOnlyHint, false, "sending is a write; never disguised as read-only");
+});
+test("a browser Origin other than chatgpt.com is refused", async () => {
+  assert.strictEqual((await mcp(B, "tools/list", {}, access, { Origin: "https://evil.example" })).status, 403);
+  assert.strictEqual((await mcp(B, "tools/list", {}, access, { Origin: "https://chatgpt.com" })).status, 200);
 });
 test("ask_claude_code reaches claude-code, gets its correlated reply, and a retry does not execute twice", async () => {
-  // stand-in for the Mac bridge: claude-code listens, and answers each request once
   let executions = 0;
-  const bridge = (async () => {
+  const bridge = (async () => {   // stand-in for the Mac bridge: claude-code listens and answers each request once
     for (let i = 0; i < 40; i++) {
       const w = await (await fetch(B + "/wait?since=0&timeout=2", { headers: { Authorization: "Bearer " + CC_KEY } })).json();
       for (const m of w.messages || []) if (m.envelope && m.envelope.type === "request" && m.envelope.from === "chatgpt") {
@@ -118,7 +149,7 @@ test("ask_claude_code reaches claude-code, gets its correlated reply, and a retr
       }
     }
   })();
-  const call = (args) => mcp("tools/call", { name: "ask_claude_code", arguments: args }, access);
+  const call = (args) => mcp(B, "tools/call", { name: "ask_claude_code", arguments: args }, access);
   const r = await call({ message: "Status of the WelcomeIQ project?", idempotency_key: "test-key-0001", wait_seconds: 20 });
   await bridge;
   const s = r.json.result.structuredContent;
@@ -128,20 +159,71 @@ test("ask_claude_code reaches claude-code, gets its correlated reply, and a retr
   assert.strictEqual(again.duplicate, true); assert.strictEqual(again.correlation_id, s.correlation_id);
   assert.strictEqual(msgs.filter((m) => m.content.text.includes(s.correlation_id) && m.content.text.includes('"type":"request"')).length, 1, "one request on the bus");
   assert.strictEqual(executions, 1);
-  const g = (await mcp("tools/call", { name: "get_claude_code_response", arguments: { correlation_id: s.correlation_id } }, access)).json.result.structuredContent;
+  const g = (await mcp(B, "tools/call", { name: "get_claude_code_response", arguments: { correlation_id: s.correlation_id } }, access)).json.result.structuredContent;
   assert.strictEqual(g.response, s.response);
   const conflict = (await call({ message: "Something else", idempotency_key: "test-key-0001", wait_seconds: 0 })).json.result.structuredContent;
   assert.strictEqual(conflict.error, "idempotency_conflict");
 });
 test("unauthorized recipients and secrets are refused", async () => {
-  const r = (await mcp("tools/call", { name: "ask_claude_code", arguments: { message: "hi", idempotency_key: "test-key-0002", recipient: "finance" } }, access)).json.result;
+  const r = (await mcp(B, "tools/call", { name: "ask_claude_code", arguments: { message: "hi", idempotency_key: "test-key-0002", recipient: "finance" } }, access)).json.result;
   assert.strictEqual(r.isError, true); assert.strictEqual(r.structuredContent.error, "recipient_not_allowed");
-  const s = (await mcp("tools/call", { name: "ask_claude_code", arguments: { message: "use key sk-abcdefghijklmnopqrstuvwxyz123", idempotency_key: "test-key-0003", wait_seconds: 0 } }, access)).json.result;
+  const s = (await mcp(B, "tools/call", { name: "ask_claude_code", arguments: { message: "use key sk-abcdefghijklmnopqrstuvwxyz123", idempotency_key: "test-key-0003", wait_seconds: 0 } }, access)).json.result;
   assert.strictEqual(s.structuredContent.error, "blocked_sensitive_content");
 });
 test("cutting chatgpt off from the admin console stops the connector at once", async () => {
   await fetch(B + "/admin/cutoff?agent=chatgpt", { method: "POST", headers: { Authorization: "Bearer " + OPS_KEY } });
-  assert.strictEqual((await mcp("tools/list", {}, access)).status, 401);
+  assert.strictEqual((await mcp(B, "tools/list", {}, access)).status, 401);
   await fetch(B + "/admin/restore?agent=chatgpt", { method: "POST", headers: { Authorization: "Bearer " + OPS_KEY } });
-  assert.strictEqual((await mcp("tools/list", {}, access)).status, 200);
+  assert.strictEqual((await mcp(B, "tools/list", {}, access)).status, 200);
+});
+test("a token from one OAuth secret is worthless under another (rotation revokes all)", async () => {
+  // same public address (so the audience matches), different secret: only the signature differs
+  const other = await startRelay({ CHATGPT_OAUTH_SECRET: crypto.randomBytes(32).toString("base64url"), PUBLIC_BASE_URL: B });
+  assert.strictEqual((await mcp(B, "tools/list", {}, access)).status, 200);
+  assert.strictEqual((await mcp(other, "tools/list", {}, access)).status, 401);
+});
+test("off by default: no switch, or no dedicated secret, means every connector path is a 404", async () => {
+  for (const extra of [{ CHATGPT_MCP_ENABLED: "" }, { CHATGPT_OAUTH_SECRET: "" }, { CHATGPT_OAUTH_SECRET: "too-short" }]) {
+    const b = await startRelay(extra);
+    for (const p of ["/mcp", "/.well-known/oauth-protected-resource", "/.well-known/oauth-authorization-server", "/oauth/authorize"])
+      assert.strictEqual((await fetch(b + p)).status, 404, JSON.stringify(extra) + " " + p);
+  }
+});
+test("without the OUTSIDE_ROUTES grant, the relay itself refuses chatgpt -> claude-code", async () => {
+  const b = await startRelay({ OUTSIDE_ROUTES: "muse>maryalice" });
+  const { verifier, reg, url } = await startSignIn(b, {});
+  const ap = await approveFromPage(b, url, DAMIAN); assert.ok(ap.redirect, JSON.stringify(ap));
+  const code = new URL(ap.redirect).searchParams.get("code");
+  const t = await (await fetch(b + "/oauth/token", form({ grant_type: "authorization_code", code, client_id: reg.client_id, redirect_uri: REDIRECT, code_verifier: verifier }))).json();
+  const r = (await mcp(b, "tools/call", { name: "ask_claude_code", arguments: { message: "hi", idempotency_key: "test-key-route", wait_seconds: 0 } }, t.access_token)).json.result;
+  assert.strictEqual(r.structuredContent.error, "not_allowed");
+});
+
+// Independent conformance: the official MCP TypeScript SDK client does discovery, DCR, PKCE and resource on its own.
+const SDK = [process.env.MCP_SDK_DIR, path.join(__dirname, "../../../agent-bus-relay/welcomeiq/node_modules/@modelcontextprotocol/sdk")].find((d) => d && fs.existsSync(path.join(d || "", "package.json")));
+test("official MCP SDK client: OAuth discovery, DCR, PKCE, token, then tools/call", { skip: !SDK && "MCP SDK not found" }, async () => {
+  const { auth } = require(path.join(SDK, "dist/cjs/client/auth.js"));
+  const { Client } = require(path.join(SDK, "dist/cjs/client/index.js"));
+  const { StreamableHTTPClientTransport } = require(path.join(SDK, "dist/cjs/client/streamableHttp.js"));
+  const store = {};
+  const provider = {
+    get redirectUrl() { return REDIRECT; },
+    get clientMetadata() { return { client_name: "SDK conformance", redirect_uris: [REDIRECT], grant_types: ["authorization_code", "refresh_token"], response_types: ["code"], token_endpoint_auth_method: "none" }; },
+    clientInformation: () => store.client, saveClientInformation: (c) => { store.client = c; },
+    tokens: () => store.tokens, saveTokens: (t) => { store.tokens = t; },
+    redirectToAuthorization: (u) => { store.authUrl = u; },
+    saveCodeVerifier: (v) => { store.verifier = v; }, codeVerifier: () => store.verifier,
+  };
+  assert.strictEqual(await auth(provider, { serverUrl: B + "/mcp" }), "REDIRECT");
+  assert.strictEqual(store.authUrl.searchParams.get("code_challenge_method"), "S256");
+  assert.strictEqual(store.authUrl.searchParams.get("resource"), B + "/mcp");
+  const back = new URL((await approveFromPage(B, store.authUrl.href, DAMIAN)).redirect);
+  assert.strictEqual(await auth(provider, { serverUrl: B + "/mcp", authorizationCode: back.searchParams.get("code") }), "AUTHORIZED");
+  const client = new Client({ name: "sdk-conformance", version: "1.0.0" });
+  await client.connect(new StreamableHTTPClientTransport(new URL(B + "/mcp"), { authProvider: provider }));
+  const { tools } = await client.listTools();
+  assert.deepStrictEqual(tools.map((t) => t.name), ["ask_claude_code", "get_claude_code_response"]);
+  const r = await client.callTool({ name: "get_claude_code_response", arguments: { correlation_id: "cgpt-00000000000000000000" } });
+  assert.strictEqual(r.structuredContent.error, "unknown_correlation_id");
+  await client.close();
 });
