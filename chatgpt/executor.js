@@ -59,10 +59,10 @@ function prompt(task, d, cid) {
     "{\"comment\": \"what was done and the evidence, in a few lines\",\n" +
     " \"fields\": {\"resume_context\": \"why this task exists and where it stands, so anyone can pick it up cold\",\n" +
     "            \"next_activity\": \"the single next concrete action\", \"next_activity_date\": \"YYYY-MM-DD\",\n" +
-    "            \"definition_of_done\": \"only if the task has none\", \"evidence_required\": \"only if the task has none\", \"execution_actor\": \"Claude | Damian | Arsalan\"},\n" +
+    "            \"definition_of_done\": \"only if the task has none\", \"evidence_required\": \"only if the task has none\", \"execution_actor\": \"Claude Code\"},\n" +
     " \"issues\": [{\"title\": \"a real problem or blocker found\", \"description\": \"details\"}]}\n" +
     "```\n" +
-    "Each field is at most 1000 characters. Omit what you have nothing for. Definition of Done, Evidence Required and Execution Actor are kept if already set. At most 3 issues, only for real problems.";
+    "Each field is at most 1000 characters. Omit what you have nothing for. Definition of Done, Evidence Required and Execution Actor are kept if already set. Execution Actor must be one of: Claude, Damian, Arsalan, Muse, Claude Code, SysAuto, SalesM, Finance, Codex, GPT, Mary Alice, Biz Operations, Compliance, OpenClaw Agent, Other, Notebook. Use \"Claude Code\" for work you are doing yourself. At most 3 issues, only for real problems.";
 }
 
 function runClaude(claudeBin, text, cwd, env) {

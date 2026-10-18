@@ -21,7 +21,9 @@ sys.path.insert(0, str(ROOT))
 
 TEXT = ("definition_of_done", "evidence_required", "resume_context", "next_activity")
 SET_ONCE = ("definition_of_done", "evidence_required", "execution_actor")
-ACTORS = ("Claude", "Damian", "Arsalan")
+# Execution Actor picklist values, exactly as configured in Zoho (field 1156860000009143012), read 2026-10-18.
+ACTORS = ("Claude", "Damian", "Arsalan", "Muse", "Claude Code", "SysAuto", "SalesM", "Finance", "Codex", "GPT", "Mary Alice",
+          "Biz Operations", "Compliance", "OpenClaw Agent", "Other", "Notebook")
 LABEL = "[Claude Code, delegated by ChatGPT for Damian, {cid}]"
 
 
