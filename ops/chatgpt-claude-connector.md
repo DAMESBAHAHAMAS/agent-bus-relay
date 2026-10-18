@@ -3,24 +3,26 @@
 Project owner: Damian. Assigned 2026-10-18 to a separate Claude Code session. Branch `chatgpt-claude-connector`
 (worktree `~/Developer/agent-bus-relay-chatgpt`). This file is the resume point: read it first, do not repeat discovery.
 
-## Damian's conditions (2026-10-18, second instruction)
-Prepare for deployment only. A dedicated OAuth secret stored in Render (no derivation from the bus secret). Validate against OpenAI's
-current MCP authorization spec. Verify his ChatGPT plan permits the `ask_claude_code` (write) tool, without assuming. Keep the connector
-disabled. Prepare exact Render changes and a rollback. NO deploy, routing change or bridge restart until the checks are complete.
-Coordinate the merge with Codex and keep the branch.
-
-## State as of 2026-10-18 12:55 EDT
-| Item | State |
-|---|---|
-| Discovery | DONE (below) |
-| Connector code, dedicated secret, off by default | DONE on branch. Not merged, not deployed. |
-| OpenAI OAuth checklist | PASSED offline (table below). One item is accepted by design: mTLS client-cert check (see the table). |
-| Official MCP SDK client conformance | PASSED offline (SDK 1.29.0: discovery, DCR, PKCE S256, resource, token, tools/call) |
-| Tests | `node --test chatgpt/test/` gives 15/15 pass |
-| ChatGPT plan permits a write tool | NOT VERIFIED. Plan = Plus. OpenAI's docs conflict (below). Needs Damian's in-app check. |
-| Render changes and rollback | PREPARED as `bus-admin.py chatgpt …`. `plan` (read-only) run; nothing changed on Render. |
-| Claude Code side | LIVE: read-only project context in `~/.agent-bus/claude-code/`; live bus test answered |
-| End-to-end with real ChatGPT | NOT DONE: needs activation approvals |
+## DEPLOYMENT LOG (2026-10-18, Damian said GO at ~13:25 EDT)
+- Codex/WelcomeIQ coordination: that session committed server.js together with welcomeiq/relay.cjs (e959aa3, local), which resolved the
+  missing dependency. Merged on main: origin/main 1d110f7 into e959aa3 (0d51ef7), then this branch (475afb2). Merged tree: connector tests
+  17/17, welcomeiq tests 14/14. Note: ops/COORDINATION-chatgpt-connector.md (untracked, main checkout).
+- Refresh-token replay fix (ef5752d): token families with head rotation; reuse of an old token revokes the family and alerts Damian.
+  Head moves are written first as HMAC-signed markers in #oc-alerts (format `[relay] chatgpt-oauth head fam=… n=… g=… sig=…`; no
+  token is ever written) and re-read after a restart; if the state cannot be read or written, refresh fails closed. 60-second retry grace.
+  Auth codes are single-use across restarts too (code id = family id).
+- 13:33 `bus-admin.py chatgpt stage-secret`: CHATGPT_OAUTH_SECRET present in Render (64 chars) and Keychain `agent-bus-chatgpt-oauth-secret`.
+- 13:36 pushed main 475afb2; Render deploy live 17:36:11Z; /healthz ok; connector paths 404 (off).
+- 13:37 `bus-admin.py chatgpt activate`: CHATGPT_MCP_ENABLED=1, OUTSIDE_ROUTES=muse>maryalice,chatgpt>claude-code; deploy live.
+  Then PRM 200, AS metadata 200, /mcp without token 401 with the resource_metadata challenge (6/6 stable checks).
+- 13:39 bridge restarted (launchctl kickstart): pid 74932, all 15 agents listening, WELCOMEIQ_ENABLED unset (no WelcomeIQ worker).
+- Live production checks: official MCP SDK 1.29.0 `auth()` → REDIRECT with DCR client issued, S256, resource = /mcp; no token 401;
+  forged token 401; hostile redirect registration 400; bogus code 400.
+- Live `tests/run-tests.sh security`: 31 pass, 2 fail, neither from this work: (a) the key scan matches a sha256 backup hash in
+  ops/day3-verification-2026-10-17.md (since d9df86c; not a key); (b) the unreachable-agent alert check counts leftover in-memory audit
+  events, and there were none after the restart. (b) was then exercised directly: claude-compliance and chatgpt were cut off on the
+  running relay, a request was sent (cid 1672a3ef-6ce5-4db1-af51-cfce92d5e7e7), and the audit shows `human_alert manual status 200`.
+  Both were restored. The emergency cut-off is proven live for chatgpt.
 
 ## Discovery findings
 - The relay (`server.js`, Render `agent-bus-relay`, public HTTPS) is the only door to `#agent-bus`. Identity comes from a service key.

@@ -141,8 +141,11 @@ def chatgpt(sub):
             return urllib.request.urlopen(urllib.request.Request(BASE + path, method=method, data=b"{}" if method == "POST" else None), timeout=30).status
         except urllib.error.HTTPError as e: return e.code
         except Exception: return 0
-    prm, mcp = code_of("/.well-known/oauth-protected-resource/mcp"), code_of("/mcp", "POST")
     want = (200, 401) if sub != "rollback" else (404, 404)
+    for _ in range(12):   # Render switches instances gradually; the old one can answer for a little while after "live"
+        prm, mcp = code_of("/.well-known/oauth-protected-resource/mcp"), code_of("/mcp", "POST")
+        if (prm, mcp) == want: break
+        time.sleep(10)
     print("Check: protected-resource metadata HTTP %s, /mcp without a token HTTP %s (expected %s, %s): %s" % (prm, mcp, want[0], want[1], "OK" if (prm, mcp) == want else "NOT AS EXPECTED"))
 
 def status():
