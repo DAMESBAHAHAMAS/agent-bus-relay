@@ -182,6 +182,36 @@ test("ask_claude_code reaches claude-code, gets its correlated reply, and a retr
   const conflict = (await call({ message: "Something else", idempotency_key: "test-key-0001", wait_seconds: 0 })).json.result.structuredContent;
   assert.strictEqual(conflict.error, "idempotency_conflict");
 });
+test("delegate_task: hidden unless switched on; posts the task to claude-code; in_progress until the result; bad ids refused", async () => {
+  assert.ok(!(await mcp(B, "tools/list", {}, access)).json.result.tools.some((t) => t.name === "delegate_task"), "hidden when off");
+  const D = await startRelay({ CHATGPT_DELEGATION_ENABLED: "1", PUBLIC_BASE_URL: B });   // same address and secret, so the token works
+  assert.ok((await mcp(D, "tools/list", {}, access)).json.result.tools.some((t) => t.name === "delegate_task"));
+  const bad = (await mcp(D, "tools/call", { name: "delegate_task", arguments: { project_id: "abc", task_id: "1", instruction: "x", idempotency_key: "deleg-bad-01" } }, access)).json.result.structuredContent;
+  assert.strictEqual(bad.error, "invalid_task");
+  let seen;
+  const bridge = (async () => {   // stand-in for the Mac executor: STARTED at once, the result later
+    for (let i = 0; i < 40; i++) {
+      const w = await (await fetch(D + "/wait?since=0&timeout=2", { headers: { Authorization: "Bearer " + CC_KEY } })).json();
+      const m = (w.messages || []).find((x) => x.envelope && x.envelope.type === "request" && x.envelope.payload && x.envelope.payload.kind === "delegated_task");
+      if (!m) continue;
+      seen = m.envelope;
+      const post = (type, payload) => fetch(D + "/messages", { method: "POST", headers: { Authorization: "Bearer " + CC_KEY, "Content-Type": "application/json" }, body: JSON.stringify({ to: "chatgpt", type, correlation_id: m.envelope.correlation_id, payload }) });
+      await post("ack", "STATUS: STARTED " + m.envelope.correlation_id + " on task 1156860000000000002.");
+      await new Promise((r) => setTimeout(r, 1500));
+      await post("result", "Added the README line in commit abc123.\nSTATUS: COMPLETE");
+      return;
+    }
+  })();
+  const r = (await mcp(D, "tools/call", { name: "delegate_task", arguments: { project_id: "1156860000000000001", task_id: "1156860000000000002", instruction: "Add a README line", idempotency_key: "deleg-test-01", wait_seconds: 0 } }, access)).json.result.structuredContent;
+  assert.strictEqual(r.ok, true);
+  await new Promise((res) => setTimeout(res, 700));
+  const mid = (await mcp(D, "tools/call", { name: "get_claude_code_response", arguments: { correlation_id: r.correlation_id } }, access)).json.result.structuredContent;
+  assert.strictEqual(mid.state, "in_progress", "STARTED is not completion");
+  const done = (await mcp(D, "tools/call", { name: "get_claude_code_response", arguments: { correlation_id: r.correlation_id, wait_seconds: 15 } }, access)).json.result.structuredContent;
+  await bridge;
+  assert.strictEqual(done.state, "completed"); assert.match(done.response, /abc123/);
+  assert.deepStrictEqual({ kind: seen.payload.kind, task: seen.payload.task_id, from: seen.from, cls: seen.sender_class }, { kind: "delegated_task", task: "1156860000000000002", from: "chatgpt", cls: "outside" });
+});
 test("unauthorized recipients and secrets are refused", async () => {
   const r = (await mcp(B, "tools/call", { name: "ask_claude_code", arguments: { message: "hi", idempotency_key: "test-key-0002", recipient: "finance" } }, access)).json.result;
   assert.strictEqual(r.isError, true); assert.strictEqual(r.structuredContent.error, "recipient_not_allowed");

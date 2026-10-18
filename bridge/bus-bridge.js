@@ -6,6 +6,7 @@
 // - The bridge never invents an acknowledgment. No agent reply means no acknowledgment, and the relay reports the silence.
 // - Every agent owes its own reply. A request to "all" carries one id for many agents, so work is tracked per agent and id.
 const { execFile, execFileSync } = require("child_process");
+const executor = require("../chatgpt/executor");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -159,6 +160,18 @@ async function handle(agent, key, env) {
   attempts.set(k, (attempts.get(k) || 0) + 1);
   log(agent, "woken by", env.sender_class, "agent", env.from, "id", cid);
   try {
+    // A task ChatGPT delegates under Damian's system-of-record rule runs in the bounded executor (chatgpt/executor.js), not the tool-less reply.
+    const delegated = agent === "claude-code" ? executor.delegation(env) : null;
+    if (delegated) {
+      const post = async (type, text) => {
+        const r = await api(key, "POST", "/messages", { to: env.from, type, correlation_id: cid, payload: text });
+        if (r.status !== 201) log(agent, "could not post delegated", type, "for", cid, "HTTP", r.status);
+        return r;
+      };
+      await executor.execute(env, delegated, { post, claudeBin: CLAUDE, childEnv: CHILD_ENV, log });
+      done.add(k); save(); log(agent, "finished delegated", cid);
+      return;
+    }
     const result = await WAKE[KINDS[agent]](agent, frame(agent, env), env);
     if (!result.ok) {
       log(agent, "produced no reply for", cid, "(" + result.status + "). No acknowledgment sent.");

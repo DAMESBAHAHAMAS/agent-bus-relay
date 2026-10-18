@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "defaultMode": "dontAsk",
+    "allow": [
+      "Read", "Glob", "Grep", "WebSearch",
+      "Edit(~/Developer/**)", "Write(~/Developer/**)",
+      "Edit(~/.agent-bus/exec/**)", "Write(~/.agent-bus/exec/**)",
+      "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git branch:*)",
+      "Bash(git add:*)", "Bash(git commit:*)",
+      "Bash(git switch -c chatgpt/:*)", "Bash(git checkout -b chatgpt/:*)", "Bash(git push -u origin chatgpt/:*)",
+      "Bash(node --test:*)", "Bash(npm test:*)", "Bash(python3 -m pytest:*)", "Bash(ls:*)"
+    ],
+    "deny": [
+      "Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.config/gh/**)", "Read(~/.codex/**)", "Read(~/.zoho/**)",
+      "Read(~/.openclaw/credentials/**)", "Read(~/.openclaw/service-env/**)", "Read(~/.openclaw/openclaw.json)",
+      "Read(~/Developer/local-credentials/**)", "Read(~/Library/Keychains/**)", "Read(**/.env)", "Read(**/.env.*)",
+      "Edit(~/Developer/agent-bus-relay/**)", "Write(~/Developer/agent-bus-relay/**)",
+      "Edit(~/.agent-bus/claude-code/**)", "Write(~/.agent-bus/claude-code/**)",
+      "Edit(**/.claude/**)", "Write(**/.claude/**)", "Edit(**/CLAUDE.md)", "Write(**/CLAUDE.md)", "Edit(**/AGENTS.md)", "Write(**/AGENTS.md)",
+      "Edit(**/.github/workflows/**)", "Write(**/.github/workflows/**)", "Edit(**/render.yaml)", "Write(**/render.yaml)",
+      "Bash(git push --force:*)", "Bash(git push -f:*)", "Bash(git push origin main:*)", "Bash(git push origin master:*)",
+      "WebFetch"
+    ]
+  }
+}
