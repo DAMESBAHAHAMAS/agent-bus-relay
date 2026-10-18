@@ -24,6 +24,24 @@ Project owner: Damian. Assigned 2026-10-18 to a separate Claude Code session. Br
   running relay, a request was sent (cid 1672a3ef-6ce5-4db1-af51-cfce92d5e7e7), and the audit shows `human_alert manual status 200`.
   Both were restored. The emergency cut-off is proven live for chatgpt.
 
+## DELEGATED EXECUTION: LIVE (2026-10-18, Damian: "Go")
+Rule (Damian): ChatGPT may delegate any work, but only for tasks and milestones that exist in the system of record (Zoho Projects).
+- Relay tool `delegate_task` (CHATGPT_DELEGATION_ENABLED=1 on Render) posts {kind: delegated_task, project_id, task_id, instruction}.
+- Mac: chatgpt/executor.js (in the bridge) reads the task with chatgpt/task_check.py through the existing fenced Zoho adapter
+  (it must exist, be open, and sit inside the 12-project fence), posts STATUS: STARTED, then runs Claude Code with
+  --permission-mode dontAsk --setting-sources "" and only chatgpt/executor-settings.json. Workspace: ~/.agent-bus/exec/<task_id>.
+- Off switch: `rm ~/.agent-bus/delegation.on` (takes effect on the next request, no restart). Relay-side: unset CHATGPT_DELEGATION_ENABLED.
+- Session permissions Damian granted (repo .claude/settings.local.json): the sandbox check script and task_check.py only.
+- Evidence: sandbox-check.sh 5/5 (a .env file not read, the relay not written, nothing deleted, ~/.ssh not read, allowed work done);
+  task_check: open task ok; closed, out-of-fence and missing tasks refused; connector tests 19/19.
+- First live run: cgpt-b53af2c6d4c478874815, tool=delegate, task 1156860000009303226 "Draft technical implementation specification".
+  STARTED 18:52:43Z, result 18:53:20Z; ChatGPT received in_progress then the result. Deliverable on disk:
+  ~/.agent-bus/exec/1156860000009303226/technical-implementation-spec.md (117 lines, 15 sections). It reported BLOCKED only
+  because the instructions demanded a git commit outside a repository. Fixed in bcf1969: documents need no git; commits only in
+  existing repositories.
+- Lesson: after adding a tool, ChatGPT must Refresh the app (Settings → Apps). Before the refresh it sent the task through ask_claude_code
+  (cgpt-ef9be74debc8d9727228), which correctly refused.
+
 ## LIVE ACCEPTANCE: PASS (2026-10-18)
 - Sign-in: ChatGPT registered (17:57:54Z) and started sign-in (17:58:10Z). Damian's first approval did not match because Cliq stored it as a
   code block (fixed in 9b1adaa). His second approval, Cliq message 1792346607417_3312765029633, was approved at 18:03:36Z; the token was
