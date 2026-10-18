@@ -486,8 +486,6 @@ function inbox(c, agent, since, onlyMine) {
 
 const ROUTES = { "/channel": ["POST"], "/messages": ["GET", "POST"], "/wait": ["GET"], "/status": ["GET"], "/pending": ["GET"], "/agents": ["GET"], "/audit": ["GET"] , "/admin/cutoff": ["POST"], "/admin/restore": ["POST"] };
 const blocked = new Set();   // agents cut off by the admin console; takes effect at once
-const chatgpt = require("./chatgpt/connector")({ env, signing: SIGNING, channelMessages, postEnvelope, routeDenied, leakReason, underRate, hopsSinceHuman, HOP_LIMIT,
-  fromDamian, notifyHuman, audit, readBody, send, waiters, blocked });
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://x");
@@ -643,6 +641,9 @@ const server = http.createServer(async (req, res) => {
     return send(res, 500, { error: "internal", detail: String(e.message || e).slice(0, 120) });
   }
 });
+// The ChatGPT connector (off unless CHATGPT_MCP_ENABLED=1). Defined before listen(); the handler above calls it per request.
+const chatgpt = require("./chatgpt/connector")({ env, signing: SIGNING, channelMessages, postEnvelope, routeDenied, leakReason, underRate, hopsSinceHuman, HOP_LIMIT,
+  fromDamian, notifyHuman, audit, readBody, send, waiters, blocked });
 // Render's proxy keeps idle connections open and reuses them. Node's default (5 seconds) closes them first,
 // which shows up as an occasional 502. Hold connections open longer than the proxy does.
 server.keepAliveTimeout = 120000;
