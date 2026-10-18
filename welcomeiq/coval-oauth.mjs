@@ -48,12 +48,12 @@ async function inspect(){
   const catalog=await c.listTools();
   const inventory={checked_at:new Date().toISOString(),endpoint,transport:'official_remote_mcp_oauth',tool_names:catalog.tools.map(x=>x.name),read_only:true,project_mapping_verified:false,agents:[],test_sets:[]};
   function value(result){if(result.isError)throw Error('COVAL_READ_REFUSED');if(result.structuredContent)return result.structuredContent;return JSON.parse(result.content.filter(x=>x.type==='text').map(x=>x.text).join('\n'));}
-  const a=value(await c.callTool({name:'list_agents',arguments:{limit:20}}));
+  const a=value(await c.callTool({name:'list_agents',arguments:{page_size:20}}));
   const agents=Array.isArray(a)?a:a.agents??a.data?.agents??a.data??[];
-  inventory.agents=Array.isArray(agents)?agents.map(x=>({id:x.agent_id??x.id,name:x.name,model_type:x.model_type})):['Unrecognized response shape; retained tool catalog only'];
-  const t=value(await c.callTool({name:'list_test_sets',arguments:{limit:20}}));
+  inventory.agents=Array.isArray(agents)?agents.map(x=>({id:x.agent_id??x.id,name:x.display_name??x.name,model_type:x.model_type})):['Unrecognized response shape; retained tool catalog only'];
+  const t=value(await c.callTool({name:'list_test_sets',arguments:{page_size:20}}));
   const sets=Array.isArray(t)?t:t.test_sets??t.data?.test_sets??t.data??[];
-  inventory.test_sets=Array.isArray(sets)?sets.map(x=>({id:x.test_set_id??x.id,name:x.name})):['Unrecognized response shape; retained tool catalog only'];
+  inventory.test_sets=Array.isArray(sets)?sets.map(x=>({id:x.test_set_id??x.id,name:x.display_name??x.name})):['Unrecognized response shape; retained tool catalog only'];
   const target=path.join(dir,'evidence/coval-mcp-readonly.json');fs.mkdirSync(path.dirname(target),{recursive:true,mode:0o700});fs.writeFileSync(target,JSON.stringify(inventory,null,2),{mode:0o600});console.log(JSON.stringify(inventory,null,2));
  }finally{await c.close();}
 }

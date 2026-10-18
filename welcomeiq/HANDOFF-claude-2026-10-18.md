@@ -141,3 +141,55 @@ No automated specialist reply exists. No Coval run ID exists. Acceptance criteri
 - 12:52 EDT: Damian chose "the safe route" (shell stays off). Slack account welcomeiq re-enabled; log 16:52:37Z "slack socket mode
   connected". The lockdown is intact (exec security=deny, fs.workspaceOnly=true). NEXT: live test message post-lockdown; Arsalan's first message.
   Codex: if you change this agent's tools, re-run the capability probe before leaving Slack enabled.
+
+## Update ~13:05 EDT: commit + Coval agent ID
+- Commit e959aa3 on LOCAL main (WelcomeIQ files only; not pushed). See ops/COORDINATION-chatgpt-connector.md for the
+  connector session's branch; that session should rebase onto local main.
+- Damian recorded the Coval agent ID for "My Agent": GANBuxiCnWTkC6PYVFTC47. It is in the specialist's AGENTS.md
+  (backup .pre-agentid-20261018). NOT written to ~/.openclaw/state/welcomeiq/policy.json (baseline.agent_id is still null):
+  that file is the spend-gated policy, and editing it belongs with the allowance approval.
+- Still open before any run: not shared with HumanIQ/Muse; test/staging endpoint; allowance.
+- WorkDrive folder fgdwwd3533323f9e743928afa5ec792c8eedf (Arsalan's handover files) has been listed. Its .env was deliberately NOT opened.
+- ~13:10 EDT Damian settled: "My Agent" GANBuxiCnWTkC6PYVFTC47 is WelcomeIQ-only (HumanIQ and Muse excluded); a designated
+  non-public test number (kept out of git; it is in the specialist's local AGENTS.md); Coval plan = free trial.
+  Open: the number reaches a streaming-pipeline test build (Arsalan); the Coval agent targets that number; trial simulations remaining;
+  allowance end date (7 days to 2026-10-25 suggested, NOT yet approved).
+
+## Update ~13:35 EDT: Arsalan's WorkDrive handover docs
+- Read: "WelcomeIQ_Handover_Worksheet_2026 (1).docx" (completed by Arsalan 2026-08-15) and the "Combined Work Order: Claude Migration
+  + Phase B" PDF. Extracted under /tmp/wiq-docs (temporary). NOT read: Status_Report_v2 (small download comes back inline; needs another
+  route), logs_dump, the PNG diagrams, two WhatsApp chat exports (private). The .env file was deliberately NOT opened.
+- Key facts are now in the specialist's AGENTS.md (backup .pre-docs-20261018): stack, flow, empty BUSINESS_SERVICES_DESCRIPTION,
+  auto-deploy-on-push of feature/streaming-pipeline to Render "omnichannel-voice-intake", Stage 6 test matrix, the two launch blockers,
+  and the cost note.
+- Implications raised with Damian: no separate staging on record; Coval runs consume Damian's provider usage; Twilio was a trial
+  account needing a recharge as of August.
+
+## Update: questions to Arsalan posted by the specialist
+- Damian approved, and asked to be involved only for critical updates. The specialist posted the 3 pre-run questions in C0CAZSHTJ48
+  (15:27:22 EDT) via `openclaw agent --deliver --reply-channel slack --reply-account welcomeiq --reply-to channel:C0CAZSHTJ48`
+  (session welcomeiq-ask-arsalan-20261018). The test number was deliberately omitted. AGENTS.md records the open questions and Damian's
+  "critical updates only" preference.
+- Damian 2026-10-18: Twilio is NOT on a trial account (the August worksheet is out of date). Recorded in the specialist AGENTS.md.
+- Damian 2026-10-18: "No one has the test number", so no real callers reach the deployment and it is effectively the test environment for Coval. Arsalan still to confirm which deployment answers it. Auto-deploy-on-push caution still applies to code changes.
+- Clarified: ONLY Arsalan has the test number (no real callers).
+
+## Update ~15:40 EDT: COVAL CONNECTED, testing approved, baseline running
+- Damian: "No limits on testing costs. Use as many as needed. I need a test call for a baseline."
+- Coval OAuth completed (`node coval-oauth.mjs login`, approved by Damian in the Mac browser). Tokens are in
+  ~/.openclaw/state/welcomeiq/coval-oauth.json (0600), never displayed. Codex's `inspect` failed with COVAL_READ_REFUSED only because it
+  passes `limit`; Coval's tools take `page_size`. coval-oauth.mjs was NOT edited; Codex should fix that one argument.
+- Verified: "My agent" GANBuxiCnWTkC6PYVFTC47 phone_number = the designated test number. 3 test sets, 8 personas, 3 prior runs (Oct 12/14/15).
+- Render correction: the service is omni-channel-voice-intake (srv-db1hokqd0e5s73fq6pvg), branch feature/streaming-pipeline, autoDeploy=NO.
+  A new deploy went live 2026-10-18 16:34Z (not by Claude Code).
+- BASELINE run BA3xd7KnctbjRC5AwytkKT created 19:38:54Z: persona Kent, test set ickuZTc8, the 6 agent metrics + Latency + Interruption Rate,
+  concurrency 1, tags baseline-2026-10-18. Started directly via the Coval connector (scripts in /tmp/wiq-coval). Codex's journal/policy
+  pipeline was NOT used; policy.json is unchanged.
+
+## Update ~15:50 EDT: Coval connection fixed in code (Damian: "lets fix coval connection")
+- coval-oauth.mjs: list_agents/list_test_sets now pass page_size (not limit); inventory uses display_name. `node coval-oauth.mjs inspect`
+  succeeds and wrote evidence/coval-mcp-readonly.json (agents: My agent, Coval Starter Agent; 3 test sets; 27 tools).
+- coval-client.mjs: connectCoval() still prefers the Keychain API key (policy.credentialService). If that is absent (it is), it falls back
+  to the OAuth remoteClient(). The create_run/get_run allowlist is unchanged. Verified: get_run OK; list_agents -> TOOL_DENIED. Tests 14/14.
+- The journal/policy gate (policy.json enabled=false, spendLimitUsd=0) is unchanged, so coval_execute_request still blocks by design until
+  Codex/Damian update policy.json to match Damian's approval (no cost limit).
