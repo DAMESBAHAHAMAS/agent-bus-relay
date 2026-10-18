@@ -255,7 +255,9 @@ const pendingFor = (messages, agent) => ledger(messages).filter((r) => r.to === 
 function routeDenied(from, to, type, cid, messages) {
   if (!isExternal(from)) { // Damian's own agents may message anyone, within the delegation limits
     if (type === "request" && to !== "all" && !mayDelegate(from, to)) return from + " may message " + to + " but may not send requests to " + to + ".";
-    if (PULL_ONLY.has(to) && !String(cid || "").startsWith("cgpt-") && Date.now() - lastPullAsk(to, from, messages) > REPLY_WINDOW_MS)
+    // A reply to the pull-only agent's own request is always allowed; the request must really be on the bus (an id alone proves nothing).
+    const replyToItsRequest = (messages || []).some((m) => m.envelope && m.envelope.type === "request" && m.envelope.from === to && m.envelope.to === from && m.envelope.correlation_id === cid);
+    if (PULL_ONLY.has(to) && !replyToItsRequest && Date.now() - lastPullAsk(to, from, messages) > REPLY_WINDOW_MS)
       return to + " has not contacted " + from + " in the last " + (REPLY_WINDOW_MS / 3600000) + " hours, so " + from + " may not start a message to it.";
     return null;
   }

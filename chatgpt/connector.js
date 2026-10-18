@@ -334,7 +334,7 @@ module.exports = function chatgptConnector(d) {
     for (const m of own) {
       if (m.envelope.type !== "request") continue;
       const acked = c.messages.some((x) => x.envelope && x.envelope.from === AGENT && x.envelope.type === "ack" && x.envelope.correlation_id === m.envelope.correlation_id);
-      if (!acked) { const r = await d.postEnvelope({ from: AGENT, to: m.envelope.from, type: "ack", correlation_id: m.envelope.correlation_id, payload: "Read by ChatGPT." }); d.audit("chatgpt_inbox_ack", { correlation_id: m.envelope.correlation_id, ok: r.ok }); }
+      if (!acked) { const r = await d.postEnvelope({ from: AGENT, to: m.envelope.from, type: "ack", correlation_id: m.envelope.correlation_id, payload: "Read by ChatGPT. This confirms delivery only, not that anything was done." }); d.audit("chatgpt_inbox_ack", { correlation_id: m.envelope.correlation_id, ok: r.ok }); }
     }
     const messages = own.map((m) => ({ message_id: m.id, from: m.envelope.from, type: m.envelope.type, correlation_id: m.envelope.correlation_id, time: m.time, sent_at: new Date(m.time).toISOString(), text: textOf(m.envelope) }));
     d.audit("chatgpt_inbox_read", { count: messages.length });

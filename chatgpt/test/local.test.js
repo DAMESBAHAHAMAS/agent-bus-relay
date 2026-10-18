@@ -245,6 +245,11 @@ test("reply window: outside the window the relay refuses claude-code's message t
   assert.strictEqual(r.status, 403);
   assert.match((await r.json()).detail, /has not contacted claude-code/);
   assert.ok(!msgs.some((x) => x.content.text.includes("cc-late-0001") && x.content.text.includes('"type":"request"')), "nothing was posted");
+  // An invented cgpt- id does not open the window: only a real chatgpt request with that id does.
+  const forged = await fetch(W + "/messages", { method: "POST", headers: { Authorization: "Bearer " + CC_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ to: "chatgpt", type: "request", correlation_id: "cgpt-0123456789abcdef0123", payload: "Sneaking in." }) });
+  assert.strictEqual(forged.status, 403);
+  assert.match((await forged.json()).detail, /has not contacted claude-code/);
 });
 test("cutting chatgpt off from the admin console stops the connector at once", async () => {
   await fetch(B + "/admin/cutoff?agent=chatgpt", { method: "POST", headers: { Authorization: "Bearer " + OPS_KEY } });
