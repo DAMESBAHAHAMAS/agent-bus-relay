@@ -9,3 +9,9 @@ Damian adds and closes projects here. Sessions act within each scope under CLAUD
 - Channel type (Damian, 2026-10-17): invite-only organization channels, closed, because Cliq does not allow private channel creation for this account. Damian is a member; only invited members can join or read.
 - In scope: create the seven oc- channels (oc-business-operations, oc-finance, oc-sales-marketing, oc-systems-automation, oc-compliance-filings, oc-command, oc-alerts), Damian a member of each; post and pin a three-line charter in each function channel as Damian, from CANON and AGENTS.md only; relay v7+ and OC_CHANNELS / OC_ALERTS_CHAT on Render; pull and restart the bridge; switch remote control from Terminal to the launchd service; Day 3 tests; after they pass, remove the five function agents' Telegram topic bindings (back up first; Mary-Alice's Telegram stays); Notion write-back for Problems 1 and 2. Added to Day 3 by Damian, 2026-10-17: instant delivery in the oc- channels (relay `/cliq/oc-hint` push endpoint, Agent Bus bot participation handler, bot added to the six agent oc- channels).
 - Out of scope: archiving or deleting any channel or message; any change to Muse's or GPT's access; anything touching Personal.
+
+## WelcomeIQ Coval Specialist
+- Approved: Damian, 2026-10-18 ("approve" to the proposed entry). Owner: the Claude Code session accountable for WelcomeIQ (Codex works only on Mary-Alice).
+- Scope: `welcomeiq/` in this repo; the coval-welcomeiq OpenClaw agent and its Slack channel (#welcomeiq-coval-testing); Coval runs on "My agent" (no cost limit); branches and pull requests on damianknowles/omnichannel-voice-intake (never merge to `feature/streaming-pipeline` or deploy without Arsalan or Damian).
+- Out of scope: Mary-Alice, HumanIQ/Muse, other OpenClaw agents.
+- Record: welcomeiq/HANDOFF-claude-2026-10-18.md.
