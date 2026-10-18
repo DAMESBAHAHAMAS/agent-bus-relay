@@ -53,6 +53,8 @@ const OUTSIDE_ROUTES = new Set(env("OUTSIDE_ROUTES", "muse>maryalice").split(","
 const outsideMay = (from, to) => to === FRONT_DOOR || OUTSIDE_ROUTES.has(from + ">" + to);
 const ADMINS = new Set(list("ADMIN_AGENTS"));        // may read /audit
 const isExternal = (a) => EXTERNAL.has(a);
+// ChatGPT (chatgpt/connector.js) joins as an OUTSIDE agent only when its connector is switched on.
+if (env("CHATGPT_MCP_ENABLED", "") === "1" && env("CHATGPT_OAUTH_SECRET", "").length >= 32) { AGENTS.add("chatgpt"); EXTERNAL.add("chatgpt"); }
 // Delegation limits between Damian's own agents: "from>to" may message but may not send requests (delegate).
 // Empty by default: Mary-Alice and every other internal agent may send requests to one another in both directions.
 const NO_DELEGATION = new Set(env("NO_DELEGATION", "").split(",").map((s) => s.trim()).filter(Boolean));
@@ -507,6 +509,7 @@ const server = http.createServer(async (req, res) => {
       ocHint(chat).then((r) => audit("oc_hint", { chat, result: r })).catch(() => {});
       return send(res, 202, { ok: true });
     }
+    if (await chatgpt(req, res, url)) return;
     if (!ROUTES[url.pathname] || !ROUTES[url.pathname].includes(req.method)) {
       return send(res, 404, { error: "not_found", note: "This service only serves the agent-bus channel." });
     }
@@ -649,6 +652,9 @@ const server = http.createServer(async (req, res) => {
     return send(res, 500, { error: "internal", detail: String(e.message || e).slice(0, 120) });
   }
 });
+// The ChatGPT connector (off unless CHATGPT_MCP_ENABLED=1). Defined before listen(); the handler above calls it per request.
+const chatgpt = require("./chatgpt/connector")({ env, cliq, ocPost, alertsChat: OC_ALERTS, channelMessages, postEnvelope, routeDenied, leakReason, underRate, hopsSinceHuman, HOP_LIMIT,
+  fromDamian, notifyHuman, audit, readBody, send, waiters, blocked });
 // Render's proxy keeps idle connections open and reuses them. Node's default (5 seconds) closes them first,
 // which shows up as an occasional 502. Hold connections open longer than the proxy does.
 server.keepAliveTimeout = 120000;

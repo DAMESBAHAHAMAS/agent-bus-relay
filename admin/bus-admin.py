@@ -74,19 +74,76 @@ def sync(deploy=True):
         if code != 200: sys.exit("STOPPED: could not set %s (HTTP %s)" % (k, code))
     print("Agents allowed on the bus: " + ", ".join(active))
     if cut: print("Cut off: " + ", ".join(cut))
-    if deploy:
-        for attempt in range(4):
-            code, d = render("POST", "/services/%s/deploys" % sid, {"clearCache": "do_not_clear"})
-            if code in (200, 201, 202) and d.get("id"): break
-            time.sleep(3 + attempt * 3)
-        did = d.get("id", "")
-        if not did: sys.exit("STOPPED: Render did not start the redeploy (HTTP %s). The key change is saved and takes effect at the next deploy." % code)
-        print("Redeploying the relay...")
-        for _ in range(40):
-            code, dd = render("GET", "/services/%s/deploys/%s" % (sid, did))
-            if dd.get("status") in ("live", "build_failed", "update_failed", "canceled"): break
-            time.sleep(4)
-        print("Deploy status: %s" % dd.get("status"))
+    if deploy: redeploy(sid)
+
+def redeploy(sid):
+    for attempt in range(4):
+        code, d = render("POST", "/services/%s/deploys" % sid, {"clearCache": "do_not_clear"})
+        if code in (200, 201, 202) and d.get("id"): break
+        time.sleep(3 + attempt * 3)
+    did = d.get("id", "")
+    if not did: sys.exit("STOPPED: Render did not start the redeploy (HTTP %s). The key change is saved and takes effect at the next deploy." % code)
+    print("Redeploying the relay...")
+    for _ in range(40):
+        code, dd = render("GET", "/services/%s/deploys/%s" % (sid, did))
+        if dd.get("status") in ("live", "build_failed", "update_failed", "canceled"): break
+        time.sleep(4)
+    print("Deploy status: %s" % dd.get("status"))
+
+# ---------- ChatGPT connector (chatgpt/connector.js) ----------
+# plan          read-only: what Render holds now and what each step would change
+# stage-secret  create the dedicated OAuth secret in Keychain (if absent) and store it in Render. No redeploy; the connector stays off.
+# activate      CHATGPT_MCP_ENABLED=1 and add chatgpt>claude-code to OUTSIDE_ROUTES, redeploy, check the endpoints
+# rollback      CHATGPT_MCP_ENABLED=0 and remove that route, redeploy, check every connector path is a 404 again
+# revoke-tokens raise CHATGPT_TOKEN_GENERATION, redeploy: every ChatGPT token stops working; ChatGPT must sign in again
+CG_ROUTE = "chatgpt>claude-code"
+def render_env(sid, key):
+    code, v = render("GET", "/services/%s/env-vars/%s" % (sid, key))
+    return v.get("value") if code == 200 else None
+def render_set(sid, key, value):
+    for attempt in range(4):
+        code, _ = render("PUT", "/services/%s/env-vars/%s" % (sid, key), {"value": value})
+        if code == 200: return
+        time.sleep(3 + attempt * 3)
+    sys.exit("STOPPED: could not set %s (HTTP %s). Nothing further was changed." % (key, code))
+def chatgpt(sub):
+    sid, _ = service_id()
+    routes = render_env(sid, "OUTSIDE_ROUTES")
+    current = [r for r in (routes if routes is not None else "muse>maryalice").split(",") if r.strip()]
+    enabled, gen, secret = render_env(sid, "CHATGPT_MCP_ENABLED"), render_env(sid, "CHATGPT_TOKEN_GENERATION"), render_env(sid, "CHATGPT_OAUTH_SECRET")
+    on_routes = current + ([CG_ROUTE] if CG_ROUTE not in current else [])
+    off_routes = [r for r in current if r != CG_ROUTE] or ["muse>maryalice"]
+    if sub == "plan":
+        print("Now on Render:  CHATGPT_MCP_ENABLED=%s  OUTSIDE_ROUTES=%s  CHATGPT_TOKEN_GENERATION=%s  CHATGPT_OAUTH_SECRET=%s"
+              % (enabled, routes if routes is not None else "(unset; code default muse>maryalice)", gen, "present (%d chars)" % len(secret) if secret else "absent"))
+        print("Keychain:       agent-bus-chatgpt-oauth-secret %s" % ("present" if kc("agent-bus-chatgpt-oauth-secret") else "absent"))
+        print("stage-secret -> CHATGPT_OAUTH_SECRET=<48 random bytes from Keychain>, no redeploy")
+        print("activate     -> CHATGPT_MCP_ENABLED=1  OUTSIDE_ROUTES=%s  then redeploy" % ",".join(on_routes))
+        print("rollback     -> CHATGPT_MCP_ENABLED=0  OUTSIDE_ROUTES=%s  then redeploy" % ",".join(off_routes))
+        return
+    if sub == "stage-secret":
+        if not kc("agent-bus-chatgpt-oauth-secret"): kc_set("agent-bus-chatgpt-oauth-secret", secrets.token_urlsafe(48))
+        render_set(sid, "CHATGPT_OAUTH_SECRET", kc("agent-bus-chatgpt-oauth-secret"))
+        print("CHATGPT_OAUTH_SECRET is stored in Keychain and Render (value not shown). Not deployed; the connector is still off.")
+        return
+    if sub == "activate":
+        if not secret: sys.exit("STOPPED: run 'chatgpt stage-secret' first. Nothing was changed.")
+        render_set(sid, "CHATGPT_MCP_ENABLED", "1"); render_set(sid, "OUTSIDE_ROUTES", ",".join(on_routes))
+    elif sub == "rollback":
+        render_set(sid, "CHATGPT_MCP_ENABLED", "0"); render_set(sid, "OUTSIDE_ROUTES", ",".join(off_routes))
+    elif sub == "revoke-tokens":
+        render_set(sid, "CHATGPT_TOKEN_GENERATION", str(int(gen or "1") + 1))
+    else: sys.exit("chatgpt plan | stage-secret | activate | rollback | revoke-tokens")
+    redeploy(sid)
+    time.sleep(10)
+    def code_of(path, method="GET"):
+        try:
+            return urllib.request.urlopen(urllib.request.Request(BASE + path, method=method, data=b"{}" if method == "POST" else None), timeout=30).status
+        except urllib.error.HTTPError as e: return e.code
+        except Exception: return 0
+    prm, mcp = code_of("/.well-known/oauth-protected-resource/mcp"), code_of("/mcp", "POST")
+    want = (200, 401) if sub != "rollback" else (404, 404)
+    print("Check: protected-resource metadata HTTP %s, /mcp without a token HTTP %s (expected %s, %s): %s" % (prm, mcp, want[0], want[1], "OK" if (prm, mcp) == want else "NOT AS EXPECTED"))
 
 def status():
     sid, svc = service_id()
@@ -116,6 +173,14 @@ def main():
         code, a = relay("/audit")
         for e in a.get("events", [])[-40:]:
             print("%s | %-12s | %s" % (when(e["at"]), e["kind"], " ".join("%s=%s" % (k, v) for k, v in e.items() if k not in ("at", "kind"))))
+    elif cmd in ("cutoff", "restore") and arg == "chatgpt":
+        # The ChatGPT connector has no service key. Step 1 stops it at once; step 2 switches it off (or on) in Render, across restarts.
+        code, r = relay("/admin/%s?agent=chatgpt" % cmd, "POST")
+        print(("chatgpt is cut off now." if cmd == "cutoff" else "chatgpt is restored on the running relay.") if code == 200 else "The running relay did not confirm (HTTP %s). Continuing with the Render switch." % code)
+        sid, _ = service_id()
+        code, _ = render("PUT", "/services/%s/env-vars/CHATGPT_MCP_ENABLED" % sid, {"value": "0" if cmd == "cutoff" else "1"})
+        if code != 200: sys.exit("STOPPED: could not set CHATGPT_MCP_ENABLED (HTTP %s). Set it in the Render dashboard." % code)
+        redeploy(sid)
     elif cmd in ("cutoff", "restore"):
         if arg not in AGENTS: sys.exit("Name one of: " + ", ".join(AGENTS))
         cut = cut_list()
@@ -146,5 +211,6 @@ def main():
             print("NOT CONFIRMED: Render did not accept the %s command (last HTTP %s). Open the Render dashboard, service agent-bus-relay, and press %s." % (cmd, code, "Suspend Service" if cmd == "shutdown" else "Resume Service"))
             sys.exit(1)
     elif cmd == "sync": sync(True)
+    elif cmd == "chatgpt": chatgpt(arg or "plan")
     else: print(__doc__ or "see the comments at the top of this file")
 main()
