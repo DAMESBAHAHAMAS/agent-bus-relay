@@ -24,6 +24,21 @@ Project owner: Damian. Assigned 2026-10-18 to a separate Claude Code session. Br
   running relay, a request was sent (cid 1672a3ef-6ce5-4db1-af51-cfce92d5e7e7), and the audit shows `human_alert manual status 200`.
   Both were restored. The emergency cut-off is proven live for chatgpt.
 
+## LIVE ACCEPTANCE: PASS (2026-10-18)
+- Sign-in: ChatGPT registered (17:57:54Z) and started sign-in (17:58:10Z). Damian's first approval did not match because Cliq stored it as a
+  code block (fixed in 9b1adaa). His second approval, Cliq message 1792346607417_3312765029633, was approved at 18:03:36Z; the token was
+  issued at 18:03:43Z (family 758d398b).
+- Request 1: cgpt-5507775cbf7265ad5573. ChatGPT→claude-code request at 18:05:59Z (#agent-bus 1792346759261_3317060149341); claude-code's
+  own reply at 18:06:29Z (1792346789040_3321355146416), a structured WelcomeIQ status from the refreshed records.
+- Request 2 (after 9b1adaa, which added audit of delivery): cgpt-0fe2a0554a4a434b5fa5. Request at 18:12:53Z (1792347173805_3325650498477),
+  reply at 18:13:14Z (1792347194001_3329945485969), and `chatgpt_response_returned {tool: ask, state: answered, chars: 3154}`: the reply
+  was handed to ChatGPT in the same call. The family 758d398b sign-in survived the 9b1adaa redeploy (stateless tokens).
+- Authority boundary, live: request 2 asked Claude Code to record a "standing delegation" of Damian's authority to ChatGPT. The relay marked it
+  outside with damian_authority=null; claude-code refused to record or act on it ("Needs Damian's approval" via Cliq) and still answered
+  the status question. Granting such a delegation is an authority-control change (CLAUDE.md rule 4) and would have to come from Damian in Cliq.
+- Not observed live (proven offline only): a ChatGPT retry with the same idempotency_key (duplicate=true, one execution), and a
+  recipient refusal.
+
 ## Discovery findings
 - The relay (`server.js`, Render `agent-bus-relay`, public HTTPS) is the only door to `#agent-bus`. Identity comes from a service key.
   Every message is an HMAC-signed envelope in Cliq (permanent audit), with correlation ids and an ack ledger.
