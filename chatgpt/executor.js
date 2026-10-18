@@ -99,9 +99,23 @@ function summarize(u) {
   const parts = [];
   if (u.fields_written && u.fields_written.length) parts.push("fields " + u.fields_written.join(", "));
   if (u.comment) parts.push("comment " + u.comment);
-  if (u.issues && u.issues.length) parts.push(u.issues.length + " issue(s) " + u.issues.map((i) => i.id || i.error || "?").join(", "));
+  const made = (u.issues || []).filter((i) => i.id), failed = (u.issues || []).filter((i) => !i.id);
+  if (made.length) parts.push(made.length + " issue(s) logged " + made.map((i) => i.id).join(", "));
+  if (failed.length) parts.push(failed.length + " issue(s) NOT logged (" + (/INVALID_OAUTHSCOPE/.test(failed[0].error || "") ? "the Zoho credential lacks permission to create issues" : String(failed[0].error || "unknown error").slice(0, 80)) + ")");
   const skipped = (u.fields_skipped || []).map((s) => (typeof s === "string" ? s : s.field + " (" + s.why + ")"));
   return "Zoho task updated: " + (parts.join("; ") || "nothing") + (skipped.length ? ". Kept/skipped: " + skipped.join("; ") : "") + ".";
+}
+
+// A run that a bridge restart cuts short must not look "in progress" forever: the marker names the run in flight,
+// and the bridge reports it as interrupted when it starts again.
+const MARKER = path.join(WORK_ROOT, ".running.json");
+async function recoverInterrupted(postFor) {
+  let m; try { m = JSON.parse(fs.readFileSync(MARKER, "utf8")); } catch (e) { return null; }
+  await postFor(m.cid, "result", "This notice is from the Mac bridge, not from Claude Code. The run for task " + m.task_id + " (started " + m.at +
+    ") was interrupted by a bridge restart and did not finish. Nothing was written to Zoho by this run. Send the same delegate_task again with a NEW idempotency_key.\n" +
+    "STATUS: BLOCKED: run interrupted by a bridge restart; retry with a new idempotency_key.");
+  try { fs.unlinkSync(MARKER); } catch (e) {}
+  return m.cid;
 }
 
 let running = false;
@@ -119,6 +133,7 @@ async function execute(env, d, { post, claudeBin, childEnv, check = checkTask, r
     await post("ack", "STATUS: STARTED " + cid + " on task " + d.task_id + " (" + task.name + "). The result will follow on this correlation id.");
     const cwd = path.join(WORK_ROOT, d.task_id);
     fs.mkdirSync(cwd, { recursive: true });
+    fs.writeFileSync(MARKER, JSON.stringify({ cid, task_id: d.task_id, at: new Date().toISOString() }));
     log("delegated task", d.task_id, "started for", cid);
     const r = await run(claudeBin, prompt(task, d, cid), cwd, childEnv);
     if (!r.ok) return post("result", "STATUS: BLOCKED: the run ended without a report (" + r.status + "). Nothing is claimed as done.");
@@ -132,7 +147,7 @@ async function execute(env, d, { post, claudeBin, childEnv, check = checkTask, r
     const m = report.match(/\n?STATUS:\s*(COMPLETE|BLOCKED)[^\n]*\s*$/i);
     const text = m ? report.slice(0, m.index).trimEnd() + zoho + "\n" + m[0].trim() : report + zoho + status;
     return post("result", text.slice(-3500));
-  } finally { running = false; }
+  } finally { running = false; try { fs.unlinkSync(MARKER); } catch (e) {} }
 }
 
-module.exports = { delegation, execute, prompt, checkTask, runClaude, updateTask, splitReport, summarize, SETTINGS };
+module.exports = { delegation, execute, recoverInterrupted, prompt, checkTask, runClaude, updateTask, splitReport, summarize, SETTINGS };

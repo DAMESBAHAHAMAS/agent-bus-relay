@@ -216,6 +216,9 @@ async function loop(agent) {
   try { key = keychain("agent-bus-key-" + agent); } catch (e) { log(agent, "has no service key in Keychain. Skipping."); return; }
   let since = state.since[agent] || Date.now();
   log(agent, "listening (" + KINDS[agent] + ")");
+  // A delegated run cut short by a restart is reported as interrupted, never left looking "in progress".
+  if (agent === "claude-code") executor.recoverInterrupted((cid, type, text) => api(key, "POST", "/messages", { to: "chatgpt", type, correlation_id: cid, payload: text }))
+    .then((cid) => cid && log(agent, "reported interrupted delegated run", cid)).catch(() => {});
   for (;;) {
     try {
       const r = await api(key, "GET", "/wait?since=" + since + "&timeout=25", null, 45000);
