@@ -12,7 +12,7 @@ const PRESETS = {
   // Same persona and test set as Arsalan's Oct 14/15 runs, so results compare like for like.
   baseline: {persona_id: 'gjxBaQEtnaBdEV6XJmjmfp', test_set_id: 'ickuZTc8', options: {iteration_count: 1, concurrency: 1}},
   stress: {persona_id: 'gjxBaQEtnaBdEV6XJmjmfp', test_set_id: 'WzYj6KAm', options: {iteration_count: 1, concurrency: 1}},
-  concurrent3: {persona_id: 'gjxBaQEtnaBdEV6XJmjmfp', test_set_id: 'ickuZTc8', options: {iteration_count: 2, concurrency: 3}},
+  // No simultaneous-call preset: Damian, 2026-10-18, "We're not testing simultaneous calls right now."
 };
 
 async function call(c, name, args = {}) {

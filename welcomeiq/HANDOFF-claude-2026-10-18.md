@@ -215,3 +215,4 @@ No automated specialist reply exists. No Coval run ID exists. Acceptance criteri
 | No broken speech | n/a | n/a | YES / NO |
 | Critical failure | n/a | NONE | NONE / NONE |
 Turns 12/16; audio 129 s / 146 s; interruption rate 0 / 0.41.
+- Damian 2026-10-18: "We are not testing simultaneous calls right now." concurrent3 preset removed from coval-ops.mjs; specialist told.
