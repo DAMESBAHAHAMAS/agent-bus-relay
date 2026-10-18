@@ -642,7 +642,7 @@ const server = http.createServer(async (req, res) => {
   }
 });
 // The ChatGPT connector (off unless CHATGPT_MCP_ENABLED=1). Defined before listen(); the handler above calls it per request.
-const chatgpt = require("./chatgpt/connector")({ env, channelMessages, postEnvelope, routeDenied, leakReason, underRate, hopsSinceHuman, HOP_LIMIT,
+const chatgpt = require("./chatgpt/connector")({ env, cliq, ocPost, alertsChat: OC_ALERTS, channelMessages, postEnvelope, routeDenied, leakReason, underRate, hopsSinceHuman, HOP_LIMIT,
   fromDamian, notifyHuman, audit, readBody, send, waiters, blocked });
 // Render's proxy keeps idle connections open and reuses them. Node's default (5 seconds) closes them first,
 // which shows up as an occasional 502. Hold connections open longer than the proxy does.

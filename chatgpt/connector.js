@@ -14,6 +14,7 @@
 //  - "chatgpt" is an OUTSIDE agent: the relay's own routeDenied() decides whom it may reach (OUTSIDE_ROUTES must hold
 //    chatgpt>claude-code), the bridge frames its text as untrusted data, and it can never carry Damian's authority.
 //  - Recipients are also limited here (CHATGPT_RECIPIENTS, default claude-code). No shell, file or other tool is exposed.
+//  - Refresh tokens rotate in families; reuse of an old one revokes the family. State survives restarts as signed markers in #oc-alerts.
 //  - Idempotency: the correlation id is derived from the caller's idempotency key, so a retry finds the first request
 //    instead of posting a second one. The bridge never runs the same agent and id twice.
 //  - Rate limits: the relay's per-agent minute limit and loop guardrail, plus CHATGPT_MAX_PER_HOUR new requests.
@@ -68,7 +69,6 @@ module.exports = function chatgptConnector(d) {
   // ---------- OAuth: sign-in approved by Damian in Cliq ----------
   const pending = new Map();   // request id -> sign-in waiting for Damian
   const usedCodes = new Set();
-  const usedRefresh = new Set();
   function newCode() { const b = crypto.randomBytes(8); let s = ""; for (const x of b) s += CODE_ALPHABET[x % CODE_ALPHABET.length]; return s.slice(0, 4) + "-" + s.slice(4); }
   function oauthError(res, status, error, description) { return d.send(res, status, { error, error_description: description }); }
   function page(res, status, html) {
@@ -124,10 +124,61 @@ module.exports = function chatgptConnector(d) {
     return d.send(res, 200, { redirect: u.href });
   }
 
-  function tokens(sub, approvedBy, client) {
-    const jti = crypto.randomUUID();
+  function tokens(sub, approvedBy, client, fam, n) {
     return { access_token: seal("access", { sub, aud: RESOURCE, scope: SCOPE, ap: approvedBy }, 3600), token_type: "Bearer", expires_in: 3600, scope: SCOPE,
-      refresh_token: seal("refresh", { sub, scope: SCOPE, ap: approvedBy, c: client, j: jti }, 30 * 86400) };
+      refresh_token: seal("refresh", { sub, scope: SCOPE, ap: approvedBy, c: client, f: fam, n }, 30 * 86400) };
+  }
+
+  // ---------- refresh-token families: replay protection that survives restarts ----------
+  // Each sign-in starts a family; each refresh moves its head from n to n+1 and only the head is accepted. Presenting an older n
+  // is a replay: the whole family is revoked and Damian is alerted. The relay has no disk, so every head move is first written as
+  // a signed marker in #oc-alerts (machine-only) and the markers are re-read after a restart. If they cannot be read or written,
+  // refresh fails closed: ChatGPT is sent back through sign-in, never let through.
+  const families = new Map();   // family id -> { n, at, last, revoked, busy }
+  const MARK = /^\[relay\] chatgpt-oauth (head|revoked) fam=([A-Za-z0-9_-]{8,64}) n=(\d+) g=(\S+) sig=([0-9a-f]{32})$/;
+  const markSig = (kind, fam, n) => crypto.createHmac("sha256", key).update(["mark", kind, fam, n, GEN].join("|")).digest("hex").slice(0, 32);
+  let loaded = null;
+  function loadFamilies() {
+    if (!loaded) loaded = (async () => {
+      if (!d.alertsChat) throw Error("no_state_channel");
+      const r = await d.cliq("GET", "/chats/" + encodeURIComponent(d.alertsChat) + "/messages?limit=100");
+      if (r.status !== 200 && r.status !== 204) throw Error("state_read_failed");
+      for (const m of r.json.data || []) {
+        const x = String((m.content && m.content.text) || "").match(MARK);
+        if (!x || x[4] !== GEN || x[5] !== markSig(x[1], x[2], x[3])) continue;
+        const f = families.get(x[2]) || { n: -1 };
+        if (x[1] === "revoked") f.revoked = true; else f.n = Math.max(f.n, Number(x[3]));
+        families.set(x[2], f);
+      }
+    })().catch((e) => { loaded = null; throw e; });
+    return loaded;
+  }
+  async function mark(kind, fam, n) {
+    const r = await d.ocPost(d.alertsChat, "[relay] chatgpt-oauth " + kind + " fam=" + fam + " n=" + n + " g=" + GEN + " sig=" + markSig(kind, fam, n));
+    if (!r.ok) throw Error("state_write_failed");
+  }
+  async function refreshGrant(r) {
+    await loadFamilies();
+    for (;;) {
+      const f = families.get(r.f);
+      if (!f || f.revoked) return { error: "refresh token unknown or revoked; sign in again" };
+      if (f.busy) { await f.busy.catch(() => {}); continue; }   // one rotation at a time per family
+      if (r.n === f.n - 1 && f.last && Date.now() - f.at < 60000) return { ok: f.last };   // a retried request: same answer, no new head
+      if (r.n !== f.n) {
+        f.revoked = true;
+        d.audit("chatgpt_refresh_replay", { family: r.f.slice(0, 8), presented: r.n, head: f.n });
+        d.notifyHuman("security", "A used ChatGPT connector refresh token was presented again. That sign-in has been revoked; ChatGPT must sign in again and you will be asked to approve it in #agent-bus.");
+        await mark("revoked", r.f, f.n).catch(() => {});
+        return { error: "refresh token reuse detected; this sign-in is revoked" };
+      }
+      let done;
+      f.busy = new Promise((ok) => (done = ok));
+      try {
+        await mark("head", r.f, f.n + 1);
+        f.n += 1; f.at = Date.now(); f.last = tokens(r.sub, r.ap, r.c, r.f, f.n);
+        return { ok: f.last };
+      } finally { f.busy = null; done(); }
+    }
   }
   async function token(req, res) {
     let raw = ""; try { raw = await d.readBody(req); } catch (e) { return oauthError(res, 400, "invalid_request", "body too large"); }
@@ -140,15 +191,25 @@ module.exports = function chatgptConnector(d) {
       if (c.c !== b.client_id || c.r !== b.redirect_uri) return oauthError(res, 400, "invalid_grant", "client or redirect mismatch");
       if (typeof b.code_verifier !== "string" || sha(b.code_verifier) !== c.pk) return oauthError(res, 400, "invalid_grant", "PKCE verification failed");
       usedCodes.add(c.j); if (usedCodes.size > 1000) usedCodes.delete(usedCodes.values().next().value);
-      d.audit("chatgpt_token_issued", { grant: "authorization_code", approved_by_message: c.ap });
-      return d.send(res, 200, tokens(c.sub, c.ap, c.c));
+      // The code's id becomes the family id, so its durable marker also makes the code single-use across restarts.
+      try {
+        await loadFamilies();
+        if (families.has(c.j)) return oauthError(res, 400, "invalid_grant", "code already used");
+        await mark("head", c.j, 0);
+      } catch (e) { return oauthError(res, 503, "temporarily_unavailable", "sign-in state could not be recorded; try again"); }
+      families.set(c.j, { n: 0, at: Date.now() });
+      d.audit("chatgpt_token_issued", { grant: "authorization_code", approved_by_message: c.ap, family: c.j.slice(0, 8) });
+      return d.send(res, 200, tokens(c.sub, c.ap, c.c, c.j, 0));
     }
     if (b.grant_type === "refresh_token") {
       const r = unseal("refresh", b.refresh_token);
-      if (!r || usedRefresh.has(r.j)) return oauthError(res, 400, "invalid_grant", "refresh token invalid, used or expired");
+      if (!r || typeof r.f !== "string" || !Number.isInteger(r.n)) return oauthError(res, 400, "invalid_grant", "refresh token invalid or expired");
       if (b.client_id && b.client_id !== r.c) return oauthError(res, 400, "invalid_grant", "refresh token was issued to another client");
-      usedRefresh.add(r.j); if (usedRefresh.size > 5000) usedRefresh.delete(usedRefresh.values().next().value);
-      return d.send(res, 200, tokens(r.sub, r.ap, r.c));
+      let out;
+      try { out = await refreshGrant(r); } catch (e) { return oauthError(res, 503, "temporarily_unavailable", "sign-in state could not be read or recorded; try again"); }
+      if (out.error) return oauthError(res, 400, "invalid_grant", out.error);
+      d.audit("chatgpt_token_refreshed", { family: r.f.slice(0, 8), n: r.n + 1 });
+      return d.send(res, 200, out.ok);
     }
     return oauthError(res, 400, "unsupported_grant_type", "authorization_code or refresh_token");
   }

@@ -12,12 +12,15 @@ const path = require("node:path");
 const DAMIAN = "111", STRANGER = "999", CC_KEY = "test-key-claude-code", OPS_KEY = "test-key-ops";
 const OAUTH_SECRET = crypto.randomBytes(32).toString("base64url");
 const msgs = []; let seq = 0;
+const chats = { CT_1: msgs, CT_AL: [] };   // #agent-bus and #oc-alerts (where refresh-token state markers live)
 const mock = http.createServer((req, res) => {
   let body = ""; req.on("data", (c) => (body += c));
   req.on("end", () => {
     const j = (s, o) => { res.writeHead(s, { "Content-Type": "application/json" }); res.end(JSON.stringify(o)); };
     if (req.url.startsWith("/oauth/v2/token")) return j(200, { access_token: "mock", expires_in: 3600 });
-    if (req.method === "GET" && /^\/chats\/[^/]+\/messages/.test(req.url)) return j(200, { data: msgs.slice(-100).reverse() });
+    const chat = (req.url.match(/^\/chats\/([^/]+)\/message/) || [])[1];
+    if (req.method === "GET" && chat) return j(200, { data: (chats[chat] || []).slice(-100).reverse() });
+    if (req.method === "POST" && chat) { const id = String(++seq); (chats[chat] = chats[chat] || []).push({ id, time: Date.now(), sender: { id: DAMIAN }, content: { text: JSON.parse(body).text } }); return j(200, { message_id: id }); }
     if (req.method === "POST" && (/^\/channelsbyname\//.test(req.url))) {
       const id = String(++seq); msgs.push({ id, time: Date.now(), sender: { id: DAMIAN, name: "Damian" }, content: { text: JSON.parse(body).text } });
       return j(200, { message_id: id });
@@ -35,7 +38,7 @@ async function startRelay(extra) {
     PORT: String(port), ZOHO_ACCOUNTS_URL: M, CLIQ_API_BASE: M, CHANNEL_UNIQUE_NAME: "agentbus", CHANNEL_CHAT_ID: "CT_1",
     SERVICE_KEYS: "claude-code:" + CC_KEY + ",ops:" + OPS_KEY, ADMIN_AGENTS: "ops", EXTERNAL_AGENTS: "muse", DAMIAN_CLIQ_IDS: DAMIAN,
     BUS_SIGNING_SECRET: "test-signing-secret", POLL_MS: "5000", OUTSIDE_ROUTES: "muse>maryalice,chatgpt>claude-code",
-    CHATGPT_MCP_ENABLED: "1", CHATGPT_OAUTH_SECRET: OAUTH_SECRET, PUBLIC_BASE_URL: base }, extra) });
+    CHATGPT_MCP_ENABLED: "1", CHATGPT_OAUTH_SECRET: OAUTH_SECRET, OC_ALERTS_CHAT: "CT_AL", PUBLIC_BASE_URL: base }, extra) });
   relays.push(p);
   for (let i = 0; i < 50; i++) { try { if ((await fetch(base + "/healthz")).ok) return base; } catch (e) {} await new Promise((r) => setTimeout(r, 100)); }
   throw Error("relay did not start");
@@ -68,7 +71,7 @@ async function mcp(base, method, params, token, headers) {
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }) });
   return { status: r.status, headers: r.headers, json: await r.json().catch(() => null) };
 }
-let access;
+let access, session;
 
 test("OpenAI checklist: resource and authorization server metadata", async () => {
   const prmRoot = await (await fetch(B + "/.well-known/oauth-protected-resource")).json();
@@ -120,8 +123,11 @@ test("Damian's Cliq approval completes OAuth: iss, PKCE, audience, single-use co
   assert.strictEqual((await fetch(B + "/oauth/token", form({ grant_type: "refresh_token", refresh_token: t.refresh_token, client_id: "someone-else" }))).status, 400, "client binding");
   const t2 = await (await fetch(B + "/oauth/token", form({ grant_type: "refresh_token", refresh_token: t.refresh_token, client_id: reg.client_id, resource: B + "/mcp" }))).json();
   assert.ok(t2.access_token && t2.refresh_token !== t.refresh_token, "rotated");
-  assert.strictEqual((await fetch(B + "/oauth/token", form({ grant_type: "refresh_token", refresh_token: t.refresh_token }))).status, 400, "refresh reuse");
-  access = t2.access_token;
+  const retry = await (await fetch(B + "/oauth/token", form({ grant_type: "refresh_token", refresh_token: t.refresh_token }))).json();
+  assert.strictEqual(retry.refresh_token, t2.refresh_token, "a retried refresh within 60 s gets the same answer, not a new head");
+  assert.ok(chats.CT_AL.some((m) => /^\[relay\] chatgpt-oauth head fam=\S+ n=1 /.test(m.content.text)), "head marker written to #oc-alerts");
+  assert.ok(!chats.CT_AL.some((m) => /cgpt\./.test(m.content.text)), "no token is ever written to the channel");
+  access = t2.access_token; session = { reg, t2 };
 });
 test("MCP: initialize, tools/list with oauth2 securitySchemes, honest annotations", async () => {
   const i = await mcp(B, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } }, access);
@@ -197,6 +203,32 @@ test("without the OUTSIDE_ROUTES grant, the relay itself refuses chatgpt -> clau
   const t = await (await fetch(b + "/oauth/token", form({ grant_type: "authorization_code", code, client_id: reg.client_id, redirect_uri: REDIRECT, code_verifier: verifier }))).json();
   const r = (await mcp(b, "tools/call", { name: "ask_claude_code", arguments: { message: "hi", idempotency_key: "test-key-route", wait_seconds: 0 } }, t.access_token)).json.result;
   assert.strictEqual(r.structuredContent.error, "not_allowed");
+});
+
+test("refresh-token replay is refused after a relay restart, and reuse revokes the whole sign-in", async () => {
+  // a fresh relay with the same secret and address stands in for the restarted one: it has no memory, only #oc-alerts
+  const { reg, verifier, url } = await startSignIn(B, {});
+  const code = new URL((await approveFromPage(B, url, DAMIAN)).redirect).searchParams.get("code");
+  const t0 = await (await fetch(B + "/oauth/token", form({ grant_type: "authorization_code", code, client_id: reg.client_id, redirect_uri: REDIRECT, code_verifier: verifier }))).json();
+  const t1 = await (await fetch(B + "/oauth/token", form({ grant_type: "refresh_token", refresh_token: t0.refresh_token }))).json();
+  assert.ok(t1.refresh_token);
+  const R = await startRelay({ PUBLIC_BASE_URL: B });
+  const port = (u) => u.replace(B, R);
+  assert.strictEqual((await fetch(port(B) + "/oauth/token", form({ grant_type: "authorization_code", code, client_id: reg.client_id, redirect_uri: REDIRECT, code_verifier: verifier }))).status, 400, "code is single-use across restarts");
+  const t2 = await (await fetch(port(B) + "/oauth/token", form({ grant_type: "refresh_token", refresh_token: t1.refresh_token }))).json();
+  assert.ok(t2.access_token, "the current head still works after the restart");
+  await new Promise((r) => setTimeout(r, 100));
+  const replay = await fetch(port(B) + "/oauth/token", form({ grant_type: "refresh_token", refresh_token: t0.refresh_token }));
+  assert.strictEqual(replay.status, 400, "an old refresh token is refused after the restart");
+  assert.strictEqual((await fetch(port(B) + "/oauth/token", form({ grant_type: "refresh_token", refresh_token: t2.refresh_token }))).status, 400, "the replay revoked the whole sign-in");
+  const R2 = await startRelay({ PUBLIC_BASE_URL: B });
+  assert.strictEqual((await fetch(R2 + "/oauth/token", form({ grant_type: "refresh_token", refresh_token: t2.refresh_token }))).status, 400, "revocation survives another restart");
+});
+test("refresh fails closed when the state channel is not configured", async () => {
+  const b = await startRelay({ OC_ALERTS_CHAT: "" });
+  const { reg, verifier, url } = await startSignIn(b, {});
+  const code = new URL((await approveFromPage(b, url, DAMIAN)).redirect).searchParams.get("code");
+  assert.strictEqual((await fetch(b + "/oauth/token", form({ grant_type: "authorization_code", code, client_id: reg.client_id, redirect_uri: REDIRECT, code_verifier: verifier }))).status, 503);
 });
 
 // Independent conformance: the official MCP TypeScript SDK client does discovery, DCR, PKCE and resource on its own.
