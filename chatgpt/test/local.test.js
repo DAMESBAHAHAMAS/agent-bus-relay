@@ -145,7 +145,7 @@ test("MCP: initialize, tools/list with oauth2 securitySchemes, honest annotation
   const i = await mcp(B, "initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "test", version: "1" } }, access);
   assert.strictEqual(i.json.result.protocolVersion, "2025-06-18");
   const tools = (await mcp(B, "tools/list", {}, access)).json.result.tools;
-  assert.deepStrictEqual(tools.map((t) => t.name), ["ask_claude_code", "get_claude_code_response"]);
+  assert.deepStrictEqual(tools.map((t) => t.name), ["ask_claude_code", "get_claude_code_response", "check_messages"]);
   for (const t of tools) assert.deepStrictEqual(t.securitySchemes, [{ type: "oauth2", scopes: ["claude.ask"] }]);
   assert.strictEqual(tools[0].annotations.readOnlyHint, false, "sending is a write; never disguised as read-only");
 });
@@ -217,6 +217,34 @@ test("unauthorized recipients and secrets are refused", async () => {
   assert.strictEqual(r.isError, true); assert.strictEqual(r.structuredContent.error, "recipient_not_allowed");
   const s = (await mcp(B, "tools/call", { name: "ask_claude_code", arguments: { message: "use key sk-abcdefghijklmnopqrstuvwxyz123", idempotency_key: "test-key-0003", wait_seconds: 0 } }, access)).json.result;
   assert.strictEqual(s.structuredContent.error, "blocked_sensitive_content");
+});
+test("reply window: claude-code may start a message to chatgpt after chatgpt asked it; check_messages shows and acknowledges it", async () => {
+  // chatgpt asked claude-code in the ask_claude_code test above, so the 24-hour window is open.
+  const post = (base, body) => fetch(base + "/messages", { method: "POST", headers: { Authorization: "Bearer " + CC_KEY, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const r = await post(B, { to: "chatgpt", type: "request", correlation_id: "cc-start-0001", payload: "Fresh Start matrix draft is ready for your wording." });
+  assert.strictEqual(r.status, 201);
+  const call = (args) => mcp(B, "tools/call", { name: "check_messages", arguments: args }, access);
+  const got = (await call({})).json.result.structuredContent;
+  assert.strictEqual(got.ok, true);
+  const m = got.messages.find((x) => x.correlation_id === "cc-start-0001");
+  assert.ok(m, "the message is visible to chatgpt"); assert.strictEqual(m.from, "claude-code"); assert.match(m.text, /Fresh Start/);
+  assert.ok(!got.messages.some((x) => String(x.correlation_id).startsWith("cgpt-")), "replies to chatgpt's own requests stay in get_claude_code_response");
+  assert.strictEqual(msgs.filter((x) => x.content.text.includes("cc-start-0001") && x.content.text.includes('"type":"ack"') && x.content.text.includes('"from":"chatgpt"')).length, 1, "read once, acknowledged once");
+  await call({});
+  assert.strictEqual(msgs.filter((x) => x.content.text.includes("cc-start-0001") && x.content.text.includes('"type":"ack"')).length, 1, "a second read does not acknowledge again");
+  const later = (await call({ since: got.latest })).json.result.structuredContent;
+  assert.ok(!later.messages.some((x) => x.correlation_id === "cc-start-0001"), "since filters what was already read");
+  const st = await (await fetch(B + "/status?correlation_id=cc-start-0001", { headers: { Authorization: "Bearer " + CC_KEY } })).json();
+  assert.strictEqual(st.state, "acknowledged");
+});
+test("reply window: outside the window the relay refuses claude-code's message to chatgpt, and raises no not-listening alert", async () => {
+  const W = await startRelay({ REPLY_WINDOW_H: "0.0001" });   // a 0.36-second window
+  await new Promise((r) => setTimeout(r, 1000));
+  const r = await fetch(W + "/messages", { method: "POST", headers: { Authorization: "Bearer " + CC_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ to: "chatgpt", type: "request", correlation_id: "cc-late-0001", payload: "Too late." }) });
+  assert.strictEqual(r.status, 403);
+  assert.match((await r.json()).detail, /has not contacted claude-code/);
+  assert.ok(!msgs.some((x) => x.content.text.includes("cc-late-0001") && x.content.text.includes('"type":"request"')), "nothing was posted");
 });
 test("cutting chatgpt off from the admin console stops the connector at once", async () => {
   await fetch(B + "/admin/cutoff?agent=chatgpt", { method: "POST", headers: { Authorization: "Bearer " + OPS_KEY } });
@@ -296,7 +324,7 @@ test("official MCP SDK client: OAuth discovery, DCR, PKCE, token, then tools/cal
   const client = new Client({ name: "sdk-conformance", version: "1.0.0" });
   await client.connect(new StreamableHTTPClientTransport(new URL(B + "/mcp"), { authProvider: provider }));
   const { tools } = await client.listTools();
-  assert.deepStrictEqual(tools.map((t) => t.name), ["ask_claude_code", "get_claude_code_response"]);
+  assert.deepStrictEqual(tools.map((t) => t.name), ["ask_claude_code", "get_claude_code_response", "check_messages"]);
   const r = await client.callTool({ name: "get_claude_code_response", arguments: { correlation_id: "cgpt-00000000000000000000" } });
   assert.strictEqual(r.structuredContent.error, "unknown_correlation_id");
   await client.close();
