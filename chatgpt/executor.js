@@ -53,7 +53,16 @@ function prompt(task, d, cid) {
     "- Your tools are limited by policy; a denied tool means the action is not allowed, not that you should find another way.\n" +
     "- Documents and other new deliverables go in your current working folder; a file there is a complete deliverable and needs no git.\n" +
     "- Only when you change code in an EXISTING repository under ~/Developer: work on a branch named chatgpt/<task_id>-<short-name>, commit, and push only that branch. Never create a new repository just to commit.\n" +
-    "Finish with a short report: what you did, evidence (files, commit ids, test output), what is left, then a final line \"STATUS: COMPLETE\" or \"STATUS: BLOCKED: <reason>\".";
+    "Finish with a short report: what you did, evidence (files, commit ids, test output), what is left, then a final line \"STATUS: COMPLETE\" or \"STATUS: BLOCKED: <reason>\".\n" +
+    "Then, to record your progress in this Zoho task, add ONE fenced block exactly like this (the bridge writes it; you have no Zoho access):\n" +
+    "```zoho-update\n" +
+    "{\"comment\": \"what was done and the evidence, in a few lines\",\n" +
+    " \"fields\": {\"resume_context\": \"why this task exists and where it stands, so anyone can pick it up cold\",\n" +
+    "            \"next_activity\": \"the single next concrete action\", \"next_activity_date\": \"YYYY-MM-DD\",\n" +
+    "            \"definition_of_done\": \"only if the task has none\", \"evidence_required\": \"only if the task has none\", \"execution_actor\": \"Claude | Damian | Arsalan\"},\n" +
+    " \"issues\": [{\"title\": \"a real problem or blocker found\", \"description\": \"details\"}]}\n" +
+    "```\n" +
+    "Each field is at most 1000 characters. Omit what you have nothing for. Definition of Done, Evidence Required and Execution Actor are kept if already set. At most 3 issues, only for real problems.";
 }
 
 function runClaude(claudeBin, text, cwd, env) {
@@ -67,9 +76,37 @@ function runClaude(claudeBin, text, cwd, env) {
     }));
 }
 
+// Write-back to the task's own Zoho record, done by the bridge through chatgpt/task_update.py (fenced, no delete, read back).
+function updateTask(projectId, taskId, body) {
+  return new Promise((resolve) => {
+    const child = execFile(PYTHON, ["-I", path.join(__dirname, "task_update.py"), projectId, taskId], { timeout: 90000 },
+      (err, stdout) => { try { resolve(JSON.parse(stdout)); } catch (e) { resolve({ ok: false, reason: "update_failed" }); } });
+    child.stdin.end(JSON.stringify(body));
+  });
+}
+const BLOCK = /```zoho-update\s*([\s\S]*?)```/;
+function splitReport(text) {   // the report for ChatGPT, and the proposed Zoho update (if any, and if it parses)
+  const m = String(text || "").match(BLOCK);
+  if (!m) return { report: text, update: null };
+  let update = null;
+  try { update = JSON.parse(m[1]); } catch (e) { update = { invalid: true }; }
+  return { report: text.replace(BLOCK, "").trim(), update };
+}
+function summarize(u) {
+  if (!u) return "Zoho: no update proposed.";
+  if (u.invalid) return "Zoho: the proposed update was not valid JSON; nothing was written.";
+  if (!u.ok && u.reason) return "Zoho: not updated (" + u.reason + ").";
+  const parts = [];
+  if (u.fields_written && u.fields_written.length) parts.push("fields " + u.fields_written.join(", "));
+  if (u.comment) parts.push("comment " + u.comment);
+  if (u.issues && u.issues.length) parts.push(u.issues.length + " issue(s) " + u.issues.map((i) => i.id || i.error || "?").join(", "));
+  const skipped = (u.fields_skipped || []).map((s) => (typeof s === "string" ? s : s.field + " (" + s.why + ")"));
+  return "Zoho task updated: " + (parts.join("; ") || "nothing") + (skipped.length ? ". Kept/skipped: " + skipped.join("; ") : "") + ".";
+}
+
 let running = false;
 // post(type, text) posts on the bus to chatgpt under the same correlation id.
-async function execute(env, d, { post, claudeBin, childEnv, check = checkTask, run = runClaude, log = () => {} }) {
+async function execute(env, d, { post, claudeBin, childEnv, check = checkTask, run = runClaude, update = updateTask, log = () => {} }) {
   const cid = env.correlation_id;
   if (!enabled()) return post("result", "STATUS: BLOCKED: delegated execution is switched off on the Mac (" + SWITCH + " is absent).");
   if (d.invalid) return post("result", "STATUS: BLOCKED: a delegated task needs numeric project_id and task_id and a non-empty instruction.");
@@ -85,9 +122,17 @@ async function execute(env, d, { post, claudeBin, childEnv, check = checkTask, r
     log("delegated task", d.task_id, "started for", cid);
     const r = await run(claudeBin, prompt(task, d, cid), cwd, childEnv);
     if (!r.ok) return post("result", "STATUS: BLOCKED: the run ended without a report (" + r.status + "). Nothing is claimed as done.");
-    const text = /STATUS:\s*(COMPLETE|BLOCKED)/i.test(r.text) ? r.text : r.text + "\n\nSTATUS: BLOCKED: the run did not state completion.";
-    return post("result", text.slice(0, 3500));
+    const { report, update: proposed } = splitReport(r.text);
+    let written = proposed;
+    if (proposed && !proposed.invalid) written = await update(d.project_id, d.task_id, Object.assign({ cid }, proposed));
+    log("delegated task", d.task_id, "zoho write-back:", JSON.stringify(written || {}).slice(0, 200));
+    const status = /STATUS:\s*(COMPLETE|BLOCKED)/i.test(report) ? "" : "\n\nSTATUS: BLOCKED: the run did not state completion.";
+    const zoho = "\n\n" + summarize(written);
+    // The status line must stay last: keep it after the Zoho summary.
+    const m = report.match(/\n?STATUS:\s*(COMPLETE|BLOCKED)[^\n]*\s*$/i);
+    const text = m ? report.slice(0, m.index).trimEnd() + zoho + "\n" + m[0].trim() : report + zoho + status;
+    return post("result", text.slice(-3500));
   } finally { running = false; }
 }
 
-module.exports = { delegation, execute, prompt, checkTask, runClaude, SETTINGS };
+module.exports = { delegation, execute, prompt, checkTask, runClaude, updateTask, splitReport, summarize, SETTINGS };

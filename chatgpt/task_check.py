@@ -16,6 +16,15 @@ def out(**kw):
     sys.exit(0)
 
 
+def custom(t):
+    """The task's custom fields (e.g. the Execution Tracking section): label, API name and current value. Read-only."""
+    out = []
+    for f in t.get("custom_fields") or t.get("custom_field_values") or []:
+        if isinstance(f, dict):
+            out.append({k: f.get(k) for k in ("label_name", "display_name", "name", "column_name", "api_name", "id", "field_type", "value") if f.get(k) not in (None, "")})
+    return out
+
+
 def main():
     if len(sys.argv) != 3 or not all(re.fullmatch(r"\d{6,25}", a) for a in sys.argv[1:]):
         out(ok=False, reason="bad_arguments")
@@ -26,7 +35,8 @@ def main():
         a = Adapter("bizops")
         if not a.project_allowed(pid):
             out(ok=False, reason="project_outside_system_of_record_fence")
-        t = control.record(a.read("project_task", {"project_id": pid, "task_id": tid}))
+        raw = a.read("project_task", {"project_id": pid, "task_id": tid})
+        t = control.record(raw)
         project = a.projects("GET", "projects/" + pid)
         ps = project if isinstance(project, list) else project.get("projects", [project])
         pname = (ps[0] or {}).get("name", "") if ps else ""
@@ -40,7 +50,7 @@ def main():
     milestone = t.get("milestone")
     out(ok=True, project_id=pid, project_name=pname, task_id=tid, name=t.get("name", ""), status=status or "",
         open=not control.closed(t), milestone=(milestone.get("name") if isinstance(milestone, dict) else milestone) or "",
-        description=control.plain(t.get("description") or "")[:4000])
+        description=control.plain(t.get("description") or "")[:4000], custom_fields=custom(t))
 
 
 main()
