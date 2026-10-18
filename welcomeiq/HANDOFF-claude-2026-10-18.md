@@ -216,3 +216,4 @@ No automated specialist reply exists. No Coval run ID exists. Acceptance criteri
 | Critical failure | n/a | NONE | NONE / NONE |
 Turns 12/16; audio 129 s / 146 s; interruption rate 0 / 0.41.
 - Damian 2026-10-18: "We are not testing simultaneous calls right now." concurrent3 preset removed from coval-ops.mjs; specialist told.
+- 2026-10-18 evening: Damian asked to push the 3 commits. Pushing main (rebase + push) was blocked by the auto-mode safety check (WelcomeIQ is not in APPROVED_PROJECTS; main auto-deploys the relay). Pushed instead to branch welcomeiq/coval-connection-2026-10-18 (no deploy). Merging to main waits for the APPROVED_PROJECTS entry or Damian.
