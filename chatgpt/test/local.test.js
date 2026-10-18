@@ -104,6 +104,18 @@ test("authorization errors redirect with iss equal to the issuer; wrong resource
   const p = await startSignIn(B, { code_challenge_method: "plain" });
   assert.strictEqual(new URL((await fetch(p.url, { redirect: "manual" })).headers.get("location")).searchParams.get("error"), "invalid_request");
 });
+test("Damian's approval counts when Cliq wraps it in a code block; a wrong code or another sender does not", async () => {
+  const { url } = await startSignIn(B, {});
+  const html = await (await fetch(url)).text();
+  const code = html.match(/approve chatgpt ([A-Z0-9]{4}-[A-Z0-9]{4})/)[1], id = html.match(/const id="([^"]+)"/)[1];
+  human(DAMIAN, "```approve chatgpt WRNG-CODE```");
+  human(STRANGER, "```approve chatgpt " + code + "```");
+  await new Promise((r) => setTimeout(r, 11000));
+  assert.deepStrictEqual(await (await fetch(B + "/oauth/approval?id=" + id)).json(), { waiting: true }, "wrong code or wrong sender");
+  human(DAMIAN, "```approve chatgpt " + code + "```");   // the exact form Cliq stored on 2026-10-18
+  let a; for (let i = 0; i < 6 && !(a && a.redirect); i++) { await new Promise((r) => setTimeout(r, 2500)); a = await (await fetch(B + "/oauth/approval?id=" + id)).json(); }
+  assert.ok(a.redirect, JSON.stringify(a));
+});
 test("a sign-in approved by someone other than Damian is never granted", async () => {
   const { url } = await startSignIn(B, {});
   assert.deepStrictEqual(await approveFromPage(B, url, STRANGER), { waiting: true });

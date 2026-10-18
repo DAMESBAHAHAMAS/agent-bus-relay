@@ -100,7 +100,7 @@ module.exports = function chatgptConnector(d) {
     d.notifyHuman("security", "ChatGPT connector sign-in requested. If you started it, type the code shown on the sign-in page in #agent-bus as \"approve chatgpt XXXX-XXXX\". If you did not, ignore this; it expires in 10 minutes.");
     return page(res, 200, "<!doctype html><meta name=viewport content='width=device-width'><title>Approve ChatGPT</title>" +
       "<body style='font:16px system-ui;max-width:560px;margin:40px auto;padding:0 16px'>" +
-      "<h2>Connect ChatGPT to Claude Code</h2><p>To approve, type this in <b>#agent-bus</b> from your own Cliq account:</p>" +
+      "<h2>Connect ChatGPT to Claude Code</h2><p>To approve, send this line in <b>#agent-bus</b> from your own Cliq account (formatting such as a code block is fine):</p>" +
       "<pre style='font-size:22px;background:#f3f3f3;padding:12px'>approve chatgpt " + esc(code) + "</pre>" +
       "<p id=s>Waiting for your Cliq message. This page continues by itself. It expires in 10 minutes.</p>" +
       "<script>const id=" + JSON.stringify(id) + ";async function t(){try{const r=await fetch('/oauth/approval?id='+encodeURIComponent(id));const j=await r.json();" +
@@ -113,8 +113,11 @@ module.exports = function chatgptConnector(d) {
     if (!p) return d.send(res, 404, { error: "expired" });
     if (Date.now() - p.at > 600000) { pending.delete(id); return d.send(res, 410, { error: "expired" }); }
     const c = await d.channelMessages(10000);
-    const want = new RegExp("^\\s*approve\\s+chatgpt\\s+" + p.code + "\\s*$", "i");
-    const ok = c.messages.find((m) => d.fromDamian(m) && m.time >= p.at && want.test(m.text));
+    // Cliq may wrap what Damian types in code or quote formatting (```…```, `…`, *…*, > …). Formatting carries no authority:
+    // the sender check (his Cliq user id) and the exact one-time code are what count.
+    const plain = (t) => String(t || "").replace(/[`*_~"'>]/g, " ").replace(/\s+/g, " ").trim();
+    const want = new RegExp("^approve chatgpt " + p.code + "$", "i");
+    const ok = c.messages.find((m) => d.fromDamian(m) && m.time >= p.at && want.test(plain(m.text)));
     if (!ok) return d.send(res, 200, { waiting: true });
     pending.delete(id);
     const code = seal("code", { c: p.client_id, r: p.redirect, pk: p.challenge, sub: SUBJECT, ap: ok.id, j: crypto.randomUUID() }, 300);
@@ -264,13 +267,15 @@ module.exports = function chatgptConnector(d) {
       });
     }
   }
+  // Records what ChatGPT was actually handed (state and reply size, never the text), so delivery is auditable end to end.
+  const delivered = (tool, s) => { d.audit("chatgpt_response_returned", { tool, correlation_id: s.correlation_id, state: s.state, duplicate: s.duplicate, chars: s.response ? s.response.length : 0 }); return s; };
   const fail = (code, detail, extra) => Object.assign({ ok: false, error: code, detail }, extra || {});
 
   async function ask(args) {
     const message = typeof args.message === "string" ? args.message.trim() : "";
     const idem = String(args.idempotency_key || "");
     const to = String(args.recipient || RECIPIENTS[0]);
-    const wait = Math.min(45, Math.max(0, Number.isFinite(args.wait_seconds) ? args.wait_seconds : 25));
+    const wait = Math.min(45, Math.max(0, Number.isFinite(args.wait_seconds) ? args.wait_seconds : 40));
     if (!message || message.length > 2500) return fail("invalid_message", "message must be 1-2500 characters");
     if (!/^[A-Za-z0-9_-]{8,100}$/.test(idem)) return fail("invalid_idempotency_key", "8-100 letters, digits, - or _");
     if (!RECIPIENTS.includes(to)) return fail("recipient_not_allowed", "ChatGPT may only reach: " + RECIPIENTS.join(", "));
@@ -296,14 +301,14 @@ module.exports = function chatgptConnector(d) {
     const r = await d.postEnvelope({ from: AGENT, to, type: "request", correlation_id: cid, payload: message });
     if (!r.ok) { sent.delete(cid); return fail("bus_post_failed", "Cliq refused the post (HTTP " + r.status + "). Nothing was sent; retry with the same idempotency_key."); }
     d.audit("chatgpt_request", { correlation_id: cid, to, message_id: r.message.id });
-    return Object.assign({ ok: true, duplicate: false }, await waitFor(cid, wait * 1000));
+    return delivered("ask", Object.assign({ ok: true, duplicate: false }, await waitFor(cid, wait * 1000)));
   }
   async function get(args) {
     const cid = String(args.correlation_id || "");
     if (!/^cgpt-[0-9a-f]{20}$/.test(cid)) return fail("unknown_correlation_id", "Not a ChatGPT correlation id.");
     const wait = Math.min(45, Math.max(0, Number.isFinite(args.wait_seconds) ? args.wait_seconds : 0));
     const s = await waitFor(cid, wait * 1000);
-    return s ? Object.assign({ ok: true }, s) : fail("unknown_correlation_id", "No request with this id is visible to the relay.");
+    return s ? delivered("get", Object.assign({ ok: true }, s)) : fail("unknown_correlation_id", "No request with this id is visible to the relay.");
   }
 
   // ---------- MCP (streamable HTTP, JSON responses, stateless) ----------
@@ -318,7 +323,7 @@ module.exports = function chatgptConnector(d) {
         message: { type: "string", minLength: 1, maxLength: 2500, description: "What to ask Claude Code." },
         idempotency_key: { type: "string", pattern: "^[A-Za-z0-9_-]{8,100}$", description: "Unique per question; reuse only to retry the same question." },
         recipient: { type: "string", enum: RECIPIENTS, default: RECIPIENTS[0] },
-        wait_seconds: { type: "integer", minimum: 0, maximum: 45, default: 25, description: "How long to wait for the reply before returning pending." } } },
+        wait_seconds: { type: "integer", minimum: 0, maximum: 45, default: 40, description: "How long to wait for the reply before returning pending." } } },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }, securitySchemes: security, _meta: { securitySchemes: security } },
     { name: "get_claude_code_response", title: "Get Claude Code response",
       description: "Read the status and reply for a request sent with ask_claude_code, by correlation_id.",
