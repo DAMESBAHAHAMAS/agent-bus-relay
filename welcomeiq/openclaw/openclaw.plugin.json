@@ -1,0 +1,23 @@
+{
+  "id": "welcomeiq-coval",
+  "name": "WelcomeIQ Coval testing",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "coval_execute_request"
+    ]
+  },
+  "toolMetadata": {
+    "coval_execute_request": {
+      "optional": true
+    }
+  }
+}

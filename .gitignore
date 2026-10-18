@@ -4,3 +4,6 @@ node_modules/
 .DS_Store
 __pycache__/
 *.pyc
+
+# WelcomeIQ operator metadata is private
+ops/welcomeiq-state.json

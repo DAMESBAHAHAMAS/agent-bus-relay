@@ -1,0 +1,42 @@
+{
+  "note": "PREVIEW ONLY — do not apply before Slack app installation and approved credential references are available",
+  "channels": {
+    "slack": {
+      "enabled": true,
+      "accounts": {
+        "welcomeiq": {
+          "enabled": true,
+          "mode": "socket",
+          "botToken": "REQUIRES_APPROVED_SECRET_REFERENCE",
+          "appToken": "REQUIRES_APPROVED_SECRET_REFERENCE",
+          "dmPolicy": "disabled",
+          "groupPolicy": "allowlist",
+          "configWrites": false,
+          "channels": {
+            "C0CAZSHTJ48": {
+              "allow": true,
+              "requireMention": false,
+              "users": [
+                "U08FY0GQ9G8",
+                "U0C22CXLLKF"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "bindings": [
+    {
+      "agentId": "coval-welcomeiq",
+      "match": {
+        "channel": "slack",
+        "accountId": "welcomeiq",
+        "peer": {
+          "kind": "channel",
+          "id": "C0CAZSHTJ48"
+        }
+      }
+    }
+  ]
+}

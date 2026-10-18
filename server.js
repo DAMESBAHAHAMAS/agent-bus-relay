@@ -483,10 +483,13 @@ function inbox(c, agent, since, onlyMine) {
 }
 
 const ROUTES = { "/channel": ["POST"], "/messages": ["GET", "POST"], "/wait": ["GET"], "/status": ["GET"], "/pending": ["GET"], "/agents": ["GET"], "/audit": ["GET"] , "/admin/cutoff": ["POST"], "/admin/restore": ["POST"] };
+const createWelcomeIQ = require('./welcomeiq/relay.cjs');
+const welcomeIQ = createWelcomeIQ({cliq,send,readBody,leakReason,signing:SIGNING,ownerIds:DAMIAN_CLIQ_IDS,underRate});
 const blocked = new Set();   // agents cut off by the admin console; takes effect at once
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://x");
+    if(await welcomeIQ(req,res,url)) return;
     if (req.method === "GET" && url.pathname === "/healthz") {
       return send(res, 200, { ok: true, version: 7, channel: CHANNEL, configured: Boolean(CHANNEL && CHAT_ID && KEYS.size && SIGNING) });
     }

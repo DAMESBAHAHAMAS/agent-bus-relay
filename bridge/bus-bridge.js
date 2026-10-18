@@ -218,3 +218,19 @@ async function loop(agent) {
 const mine = (process.env.BUS_AGENTS ? process.env.BUS_AGENTS.split(",") : Object.keys(KINDS)).map((s) => s.trim()).filter((a) => KINDS[a]);
 log("bus-bridge v3 starting for", mine.join(", "), "->", BASE);
 for (const a of mine) loop(a);
+
+
+// WelcomeIQ runs under this existing LaunchAgent, with its own private journal and credentials.
+// No WelcomeIQ payload is forwarded into the general agent-bus channel.
+if(process.env.WELCOMEIQ_ENABLED==='1'){
+ const {spawn}=require('node:child_process');
+ let stopping=false;
+ let child;
+ const launch=()=>{
+  child=spawn(process.execPath,[path.join(__dirname,'../welcomeiq/worker.mjs')],{env:CHILD_ENV,stdio:['ignore','inherit','inherit']});
+  child.on('error',()=>log('WelcomeIQ worker unavailable'));
+  child.on('exit',()=>{if(!stopping)setTimeout(launch,15000);});
+ };
+ process.on('SIGTERM',()=>{stopping=true;child?.kill('SIGTERM');process.exit(0);});
+ launch();
+}

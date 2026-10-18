@@ -1,0 +1,72 @@
+{
+  "project": "welcomeiq",
+  "agentId": "coval-welcomeiq",
+  "channelId": "CT_1424665092025303095_665429212",
+  "ownerCliqIds": [
+    "653988173"
+  ],
+  "testerCliqIds": [],
+  "credentialService": "coval-api-key-welcomeiq",
+  "enabled": false,
+  "spendLimitUsd": 0,
+  "allowanceVerifiedUntil": null,
+  "maxRunsPerDay": 1,
+  "baseline": {
+    "approved": false,
+    "agent_id": null,
+    "persona_id": null,
+    "test_set_id": null,
+    "metric_ids": [],
+    "options": {
+      "iteration_count": 1,
+      "concurrency": 1
+    }
+  },
+  "scenarios": [
+    {
+      "id": "WQ-01",
+      "name": "Greeting and purpose",
+      "expected": "Introduce WelcomeIQ and ask how to help."
+    },
+    {
+      "id": "WQ-02",
+      "name": "Supported request",
+      "expected": "Complete the documented primary WelcomeIQ task."
+    },
+    {
+      "id": "WQ-03",
+      "name": "Missing information",
+      "expected": "Ask for required details without inventing facts."
+    },
+    {
+      "id": "WQ-04",
+      "name": "Interruption and correction",
+      "expected": "Accept a caller correction and preserve the corrected intent."
+    },
+    {
+      "id": "WQ-05",
+      "name": "Unsupported request and handoff",
+      "expected": "State the limit and follow the documented handoff."
+    },
+    {
+      "id": "WQ-06",
+      "name": "Close and confirmation",
+      "expected": "Confirm the result accurately and close cleanly."
+    }
+  ],
+  "metrics": [
+    {
+      "name": "task_success",
+      "threshold": null
+    },
+    {
+      "name": "response_latency",
+      "threshold": null
+    },
+    {
+      "name": "factual_and_instruction_adherence",
+      "threshold": null
+    }
+  ],
+  "scenarioStatus": "DRAFT — Arsalan must validate against WelcomeIQ behavior; no launch thresholds approved"
+}
