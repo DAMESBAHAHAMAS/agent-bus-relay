@@ -53,6 +53,8 @@ const OUTSIDE_ROUTES = new Set(env("OUTSIDE_ROUTES", "muse>maryalice").split(","
 const outsideMay = (from, to) => to === FRONT_DOOR || OUTSIDE_ROUTES.has(from + ">" + to);
 const ADMINS = new Set(list("ADMIN_AGENTS"));        // may read /audit
 const isExternal = (a) => EXTERNAL.has(a);
+// ChatGPT (chatgpt/connector.js) joins as an OUTSIDE agent only when its connector is switched on.
+if (env("CHATGPT_MCP_ENABLED", "") === "1") { AGENTS.add("chatgpt"); EXTERNAL.add("chatgpt"); }
 // Delegation limits between Damian's own agents: "from>to" may message but may not send requests (delegate).
 // Empty by default: Mary-Alice and every other internal agent may send requests to one another in both directions.
 const NO_DELEGATION = new Set(env("NO_DELEGATION", "").split(",").map((s) => s.trim()).filter(Boolean));
@@ -484,6 +486,8 @@ function inbox(c, agent, since, onlyMine) {
 
 const ROUTES = { "/channel": ["POST"], "/messages": ["GET", "POST"], "/wait": ["GET"], "/status": ["GET"], "/pending": ["GET"], "/agents": ["GET"], "/audit": ["GET"] , "/admin/cutoff": ["POST"], "/admin/restore": ["POST"] };
 const blocked = new Set();   // agents cut off by the admin console; takes effect at once
+const chatgpt = require("./chatgpt/connector")({ env, signing: SIGNING, channelMessages, postEnvelope, routeDenied, leakReason, underRate, hopsSinceHuman, HOP_LIMIT,
+  fromDamian, notifyHuman, audit, readBody, send, waiters, blocked });
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, "http://x");
@@ -497,6 +501,7 @@ const server = http.createServer(async (req, res) => {
       ocHint(chat).then((r) => audit("oc_hint", { chat, result: r })).catch(() => {});
       return send(res, 202, { ok: true });
     }
+    if (await chatgpt(req, res, url)) return;
     if (!ROUTES[url.pathname] || !ROUTES[url.pathname].includes(req.method)) {
       return send(res, 404, { error: "not_found", note: "This service only serves the agent-bus channel." });
     }

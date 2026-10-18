@@ -93,9 +93,21 @@ async function wakeOpenClaw(agent, prompt, env) {
     return { ok: j.status === "ok" && Boolean(text), text, status: j.status };
   } catch (e) { return { ok: false, text: "", status: r.err ? "run_failed" : "unreadable_output" }; }
 }
+// Read-only context for a tool-less Claude agent: context-sources.json in its folder lists files to copy in before each wake,
+// so its CLAUDE.md can @import current copies (imports from outside the folder are not loaded in this mode). Copy only; never a tool.
+function refreshContext(dir) {
+  let list = [];
+  try { list = JSON.parse(fs.readFileSync(path.join(dir, "context-sources.json"), "utf8")); } catch (e) { return; }
+  for (const s of Array.isArray(list) ? list.slice(0, 10) : []) {
+    const to = path.basename(String(s.to || ""));
+    if (!to || !/\.md$/.test(to) || to === "CLAUDE.md" || !path.isAbsolute(String(s.from || ""))) continue;
+    try { const text = fs.readFileSync(s.from, "utf8"); fs.writeFileSync(path.join(dir, to), text.slice(0, 65536)); } catch (e) { log("context file unavailable for", path.basename(dir), to); }
+  }
+}
 async function wakeClaude(agent, prompt) {
   const dir = path.join(AGENT_HOME, agent);
   fs.mkdirSync(dir, { recursive: true });
+  refreshContext(dir);
   const role = ROLES[agent];
   const md = path.join(dir, "CLAUDE.md");
   if (role && !fs.existsSync(md)) fs.writeFileSync(md, "# " + role + " (" + agent + ")\n\nYou are Damian Knowles's " + role + " function on his agent bus.\nPaste this function's project instructions below to give it the same knowledge as the Claude project.\n");
