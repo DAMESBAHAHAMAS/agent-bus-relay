@@ -193,3 +193,25 @@ No automated specialist reply exists. No Coval run ID exists. Acceptance criteri
   to the OAuth remoteClient(). The create_run/get_run allowlist is unchanged. Verified: get_run OK; list_agents -> TOOL_DENIED. Tests 14/14.
 - The journal/policy gate (policy.json enabled=false, spendLimitUsd=0) is unchanged, so coval_execute_request still blocks by design until
   Codex/Damian update policy.json to match Damian's approval (no cost limit).
+
+## OWNERSHIP (Damian, 2026-10-18 ~16:00 EDT)
+"you will work exclusively on this repo and codex exclusively on mary alices repo which will have its own coval connection";
+"ensure that this configuration meets your preferences because you are accountable."
+- Claude Code owns and is accountable for WelcomeIQ: agent-bus-relay/welcomeiq/, the coval-welcomeiq OpenClaw agent, its Slack app/channel,
+  and WelcomeIQ's Coval connection (~/.openclaw/state/welcomeiq/). Codex no longer edits these and works only on Mary-Alice's repo.
+- Mary-Alice's Coval connection must be separate: never reuse ~/.openclaw/state/welcomeiq/coval-oauth.json or this agent's Coval tools.
+- Runs: started by Claude Code with welcomeiq/coval-ops.mjs (named presets only). The specialist explains plans/results and does not start runs;
+  its coval_execute_request path stays gated by policy.json (unchanged, locked) because its request intake was the retired Cliq design.
+- e959aa3 reached origin/main when the connector session pushed. The relay route /welcomeiq/* is live but inert
+  (HTTP 503 welcomeiq_not_configured, verified).
+
+## BASELINE RESULT: run BA3xd7KnctbjRC5AwytkKT (build deployed 2026-10-18 16:34Z), 2 calls, 19:38:54Z to 19:46:50Z
+| Metric | Oct 14 | Oct 15 | Oct 18 baseline |
+| Composite (expected behaviors) | 0.43 / 0.17 | 0.57 / 0.67 | 0.67 / 1.00 |
+| Latency (s) | 4.49 / 4.31 | n/a | 3.37 / 4.18 (target 0.5-1.5) |
+| Readback protocol | n/a | NO / NO | NO / NO |
+| Contact details correct | n/a | n/a | NO / NO |
+| Barge-in | NO_INTERRUPTION / KEPT_TALKING | NO_INTERRUPTION x2 | KEPT_TALKING / STOPPED_PROMPTLY |
+| No broken speech | n/a | n/a | YES / NO |
+| Critical failure | n/a | NONE | NONE / NONE |
+Turns 12/16; audio 129 s / 146 s; interruption rate 0 / 0.41.
