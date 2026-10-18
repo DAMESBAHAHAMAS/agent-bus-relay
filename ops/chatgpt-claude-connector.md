@@ -42,6 +42,21 @@ Rule (Damian): ChatGPT may delegate any work, but only for tasks and milestones 
 - Lesson: after adding a tool, ChatGPT must Refresh the app (Settings → Apps). Before the refresh it sent the task through ask_claude_code
   (cgpt-ef9be74debc8d9727228), which correctly refused.
 
+## ZOHO WRITE-BACK: LIVE (2026-10-18)
+- chatgpt/task_update.py, called by the bridge after a delegated run; Claude proposes a ```zoho-update``` block and never holds a credential.
+  Comment, at most 3 issues, and Execution Tracking fields on the task's own record only. Rules: definition_of_done, evidence_required
+  and execution_actor are set only if empty; resume_context, next_activity and next_activity_date are updated and read back; never status,
+  name, description, owners or dates. Execution Actor accepts the 16 Zoho picklist values; the executor uses "Claude Code".
+- Live, task IB1-T19 (cgpt-7a98ee5d5cf019340582), verified in Zoho: the four fields written, comment 1156860000009523204.
+  Issue creation was refused with INVALID_OAUTHSCOPE.
+- Damian approved adding the issue scopes. He ran ops/zoho-projects-add-issues-scope.py with a NEW server-based client (ID ending 1IALCC;
+  not the Self Client, whose shared refresh-token cap could have evicted old tokens). Scopes are now: ZohoProjects.tasks.ALL,
+  tasklists.ALL, projects.READ, bugs.CREATE, bugs.READ (no bugs.ALL, so no deleting issues). Backup:
+  ~/.zoho/projects.env.bak-20261018-152252 (mode 600). The previous token (client ending ODEGSL) is NOT revoked; that is Damian's call.
+- Proof: the same writer logged issue IB1-I1 (1156860000009521199) on task IB1-T19, read back from Zoho as Open.
+- Restart safety: chatgpt/executor.js marks a run in flight; on startup the bridge reports any interrupted run as BLOCKED
+  (a restart at 19:10:32Z killed cgpt-7211939dd1489a4b18e5, which was closed out by hand and retried).
+
 ## LIVE ACCEPTANCE: PASS (2026-10-18)
 - Sign-in: ChatGPT registered (17:57:54Z) and started sign-in (17:58:10Z). Damian's first approval did not match because Cliq stored it as a
   code block (fixed in 9b1adaa). His second approval, Cliq message 1792346607417_3312765029633, was approved at 18:03:36Z; the token was
