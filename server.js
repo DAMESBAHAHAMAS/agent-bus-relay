@@ -53,6 +53,17 @@ const OUTSIDE_ROUTES = new Set(env("OUTSIDE_ROUTES", "muse>maryalice").split(","
 const outsideMay = (from, to) => to === FRONT_DOOR || OUTSIDE_ROUTES.has(from + ">" + to);
 const ADMINS = new Set(list("ADMIN_AGENTS"));        // may read /audit
 const isExternal = (a) => EXTERNAL.has(a);
+// Reply window (Damian, 18 Oct 2026), like WhatsApp's 24-hour rule. A pull-only agent (ChatGPT reads the bus only through
+// its connector, so it is never "listening") may be messaged by one of Damian's agents only within REPLY_WINDOW_H hours
+// of its own last request to that agent. It never triggers the not-listening or no-acknowledgment alerts.
+const PULL_ONLY = new Set(env("PULL_ONLY_AGENTS", "chatgpt").split(",").map((s) => s.trim()).filter(Boolean));
+const REPLY_WINDOW_MS = Number(env("REPLY_WINDOW_H", "24")) * 3600000;
+const pullAsks = new Map();   // "chatgpt>claude-code" -> time of chatgpt's last request to claude-code (also read back from the channel)
+function lastPullAsk(puller, agent, messages) {
+  let t = pullAsks.get(puller + ">" + agent) || 0;
+  for (const m of messages || []) if (m.envelope && m.envelope.from === puller && m.envelope.to === agent && m.envelope.type === "request") t = Math.max(t, m.time);
+  return t;
+}
 // ChatGPT (chatgpt/connector.js) joins as an OUTSIDE agent only when its connector is switched on.
 if (env("CHATGPT_MCP_ENABLED", "") === "1" && env("CHATGPT_OAUTH_SECRET", "").length >= 32) { AGENTS.add("chatgpt"); EXTERNAL.add("chatgpt"); }
 // Delegation limits between Damian's own agents: "from>to" may message but may not send requests (delegate).
@@ -244,6 +255,10 @@ const pendingFor = (messages, agent) => ledger(messages).filter((r) => r.to === 
 function routeDenied(from, to, type, cid, messages) {
   if (!isExternal(from)) { // Damian's own agents may message anyone, within the delegation limits
     if (type === "request" && to !== "all" && !mayDelegate(from, to)) return from + " may message " + to + " but may not send requests to " + to + ".";
+    // A reply to the pull-only agent's own request is always allowed; the request must really be on the bus (an id alone proves nothing).
+    const replyToItsRequest = (messages || []).some((m) => m.envelope && m.envelope.type === "request" && m.envelope.from === to && m.envelope.to === from && m.envelope.correlation_id === cid);
+    if (PULL_ONLY.has(to) && !replyToItsRequest && Date.now() - lastPullAsk(to, from, messages) > REPLY_WINDOW_MS)
+      return to + " has not contacted " + from + " in the last " + (REPLY_WINDOW_MS / 3600000) + " hours, so " + from + " may not start a message to it.";
     return null;
   }
   if (to === "all") return "Outside agents may not broadcast.";
@@ -282,9 +297,10 @@ async function postEnvelope(fields) {
   cache.messages.push(m);
   lastNotified = Math.max(lastNotified, m.time);
   notify(m);
+  if (PULL_ONLY.has(envelope.from) && envelope.type === "request") pullAsks.set(envelope.from + ">" + envelope.to, m.time);
   // A recipient with no listener cannot be woken. Tell Damian at once rather than let the request sit.
   if (envelope.type === "request" && envelope.from !== RELAY && process.uptime() > 60) {
-    const deaf = (envelope.to === "all" ? rollCall(envelope.from) : [envelope.to]).filter((a) => Date.now() - (lastSeen.get(a) || 0) > 120000);
+    const deaf = (envelope.to === "all" ? rollCall(envelope.from) : [envelope.to]).filter((a) => !PULL_ONLY.has(a) && Date.now() - (lastSeen.get(a) || 0) > 120000);
     if (deaf.length) notifyHuman("manual", deaf.join(", ") + (deaf.length > 1 ? " have" : " has") + " a new request from " + envelope.from + " and " + (deaf.length > 1 ? "are" : "is") + " not listening, so " + (deaf.length > 1 ? "they" : "it") + " cannot be woken automatically. Open " + (deaf.length > 1 ? "each one" : deaf[0]) + " and tell it to check the agent bus. Request ID " + envelope.correlation_id + ".");
   }
   audit("posted", { from: envelope.from, to: envelope.to, type: envelope.type, correlation_id: envelope.correlation_id });
@@ -431,7 +447,7 @@ async function watchdog() {
     await reportCliqRollCalls(c.messages);
     const silent = new Map(); // correlation_id -> { from, minutes, agents }
     for (const r of ledger(c.messages)) {
-      if (r.state === "acknowledged") continue;
+      if (r.state === "acknowledged" || PULL_ONLY.has(r.to)) continue;   // a pull-only agent reads when it next checks
       const age = Date.now() - r.requested_at;
       const req = c.messages.find((m) => m.id === r.message_id);
       const k = r.correlation_id + "|" + r.to;
