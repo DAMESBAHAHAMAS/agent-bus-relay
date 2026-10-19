@@ -1,7 +1,7 @@
 # apply-standing-orders.py -- installs Damian's executive-decision standing orders (19 Oct 2026)
 # in each OpenClaw agent's AGENTS.md. Text: EXECUTIVE-DECISION-RULES.md, between BEGIN/END markers.
 #   - backs up each AGENTS.md first (timestamped, never overwritten)
-#   - replaces an existing block of the same marker, or appends it once
+#   - places the block right after the title line (moving an existing block there), once
 #   - changes nothing else: no config, no tools, no security settings
 # Usage: apply-standing-orders.py [--verify | --undo]
 import json, os, re, shutil, sys, time, hashlib
@@ -31,6 +31,11 @@ for a, fn in FUNCTION.items():
     bak = f + ".bak-pre-standing-orders-" + time.strftime("%Y%m%dT%H%M%S")
     shutil.copy2(f, bak)
     block = template.strip("\n").replace("{FUNCTION}", fn).replace("{AGENT}", a) + "\n"
-    new = block_re.sub(block, text) if block_re.search(text) else text.rstrip("\n") + "\n\n" + block
+    # Put the block near the TOP: some agents load only the first ~9,000 characters of AGENTS.md
+    # (finance's file is 23,301), so a block appended at the end can be invisible to the agent.
+    body = block_re.sub("", text)
+    lines = body.split("\n")
+    at = 1 if lines and lines[0].startswith("#") else 0          # after the title line, if there is one
+    new = "\n".join(lines[:at] + ["", block.rstrip("\n"), ""] + lines[at:])
     open(f, "w").write(new)
     print(a, ": installed (%d -> %d bytes), backup %s" % (len(text), len(new), os.path.basename(bak)))
