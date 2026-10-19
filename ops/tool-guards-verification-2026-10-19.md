@@ -21,3 +21,9 @@ Damian's rule (18 Oct): only Finance writes to the financial ledger. Everything 
     cp -p ~/.openclaw/backups/openclaw.json.pre-own-writes-20261018T210249Z ~/.openclaw/openclaw.json   # before both config changes
     cp -p ~/.openclaw/extensions/business-functions-direct/index.js.bak-pre-own-writes-20261018T210249Z ~/.openclaw/extensions/business-functions-direct/index.js
     openclaw config validate && launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway
+
+## Follow-up checks (2026-10-19, requested by the coordinating session)
+- Bash `echo harness-check` refused for all five others (session key diag-harness4), each with "PreToolUse:Bash hook error: OpenClaw exec policy denied native tool use (security=deny, ask=off)": finance, salesmkt, systems, compliance, codedev.
+- bizops_direct_validate: PASS (project_task_update with exact read-back on test task 1156860000009398021).
+- Bus, one request to each of the six, all acknowledged: bizops ff337916 (6 s), finance f052f468 (4 s), salesmkt fc613171 (7 s), systems b68aaee7 (9 s), compliance 69f1fb15 (9 s), codedev b51036d8 (8 s).
+- bizops calling finance_direct_write cannot be attempted: the tool is no longer exposed to bizops. The index.js guard is the backstop if it is ever re-added.
