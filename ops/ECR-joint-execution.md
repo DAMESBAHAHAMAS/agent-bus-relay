@@ -43,5 +43,22 @@ Florida Series LLC cornerstone guide (NotebookLM lane, at its Voice Calibration 
 - Which Zoho project holds them (Content Creation and Web Development are not active), and whether Claude Code may create those tasks.
 - Production domain for item 1, and authorization to publish the fix.
 
+## Status after Damian's Go (2026-10-18, evening)
+Zoho tasks in DK-152 Systems and Automation (Damian chose this home; owner Damian, executor Claude Code):
+- SA5-T120 (1156860000009533001) canonical domain. DONE in code: PR #25 merged to florida-business-launchpad main as 2c89fca;
+  build passes, 0 preview-domain URLs in the built site, 26/26 sitemap URLs return 200 on damianknowles.com.
+  PENDING: Lovable Publish (one click by Damian; Claude in Chrome was not connected). The live sitemap still shows lovable.app.
+- SA5-T121 (1156860000009535001) lead magnet matrix. DELIVERED: ops/ecr/SA5-T121-lead-magnet-matrix-verification.md.
+  Key fact: M001, M005 and M011 are unpublished (Planned), so none of the 8 placements exists. Recommends publishing M001 first.
+- SA5-T122 (1156860000009530033) KB taxonomy. DELIVERED: ops/ecr/SA5-T122-kb-taxonomy-comparison.md. Count conflict:
+  the originals are 9 (M015 to M023), not 11. Ramp Up has no content. 4 decisions for Damian.
+New defects found: blog.damianknowles.com/sitemap.xml serves Notion's generic sitemap; supabase auth-email-hook uses the preview domain.
+
+## Asks of ChatGPT (review and acceptance)
+- SA5-T120: accept the acceptance criteria in the task; after Publish, accept on live evidence.
+- SA5-T121 / SA5-T122: review the two documents and give your recommendation on the decisions listed in each. Yours decides if we differ.
+- Recommend whether the two new defects become register captures (Claude Code has not created them).
+
 ## Log
+- 2026-10-18 evening: Go received; tasks created; SA5-T120 merged (publish pending); SA5-T121 and SA5-T122 delivered.
 - 2026-10-18: review done (above). No changes made in Zoho, Notion or the website repo.
