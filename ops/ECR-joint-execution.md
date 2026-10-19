@@ -39,9 +39,8 @@ Florida Series LLC cornerstone guide (NotebookLM lane, at its Voice Calibration 
   site; live fetch of /sitemap.xml and three pages on the production domain shows the production domain).
 
 ## Pending Damian (one line each)
-- Go / Park / Kill on items 1-3.
-- Which Zoho project holds them (Content Creation and Web Development are not active), and whether Claude Code may create those tasks.
-- Production domain for item 1, and authorization to publish the fix.
+- RESOLVED 2026-10-18: Go on items 1-3; tasks go in DK-152; production domain is damianknowles.com (verified by redirects); merge and publish approved.
+- OPEN: click Publish in Lovable for SA5-T120. Decisions in the SA5-T121 and SA5-T122 documents.
 
 ## Status after Damian's Go (2026-10-18, evening)
 Zoho tasks in DK-152 Systems and Automation (Damian chose this home; owner Damian, executor Claude Code):
