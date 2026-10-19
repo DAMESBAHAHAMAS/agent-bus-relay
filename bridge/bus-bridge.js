@@ -202,7 +202,7 @@ async function handleChannel(agent, key, m) {
   try {
     const prompt = "[CLIQ - Damian, in your own channel. Verified from his own Cliq account, message " + m.id + ".]\n" +
       "<<<DAMIAN\n" + m.text + "\nDAMIAN>>>\n\nAnswer Damian directly and briefly. Your reply is posted to your Cliq channel automatically. Act within your existing authority and rules.";
-    const result = await WAKE[KINDS[agent]](agent, prompt, { session: "cliq-channel" });
+    const result = await WAKE[KINDS[agent]](agent, prompt, { session: "cliq-channel-v2" });   // v2 (19 Oct): the v1 sessions were archived to start fresh; OpenClaw refuses new work on an archived key
     if (!result.ok) { log(agent, "produced no channel reply for", m.id, "(" + result.status + ")"); return; }
     if (/^\s*NO_REPLY\s*$/.test(result.text)) { done.add(k); save(); log(agent, "chose not to reply to", m.id); return; }   // OpenClaw's "nothing to say": post nothing
     const r = await api(key, "POST", "/channel", { text: result.text.slice(0, 3400), in_reply_to: m.id });
