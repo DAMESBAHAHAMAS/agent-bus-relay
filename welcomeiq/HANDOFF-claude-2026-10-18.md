@@ -233,3 +233,18 @@ Turns 12/16; audio 129 s / 146 s; interruption rate 0 / 0.41.
 - coval-ops.mjs: optional persona (kent|luis|emma|lisa). Queue started 20:40:55Z, sequential: kent/clean 7b2ECP5UuGiSZdrCNyrehG, then luis/clean,
   emma/stress, lisa/stress. Log: ~/.openclaw/state/welcomeiq/runs-2026-10-20.log. Next: one document per simulation.
 - Slack: intermittent "slack ingress drain failed: unable to open database file" in the gateway log (39 today). Messages still flow. Watching.
+
+## Update 2026-10-20 ~17:20 EDT: Arsalan's 4 runs done and reported
+- Runs (sequential, Iterations 1 / Concurrency 1): kent/clean 7b2ECP5UuGiSZdrCNyrehG, luis/clean Sos67YUQvKHYMqBcRL6RTf,
+  emma/stress nrq6rRLZUevcNsqstxwsxK, lisa/stress mDJNFoe4hfE9zk8DTwaZkU (20:40-21:12Z). The clean set now includes the Adaeze case.
+- Transcripts, per-turn latency and metric reasons come from Coval's read-only consult_sofia (get_run has values only; one retry was needed
+  after COVI_UNAVAILABLE). Server records come from the Render log (claude.ai Render connector, read-only).
+- One report per run (6, including Arsalan's Oct 19 runs) pushed to damianknowles/omnichannel-voice-intake, branch test/coval-reports-2026-10-20
+  (commit 3d76ac1, coval-reports/, docs only). Local clone: ~/Developer/omnichannel-voice-intake. Build inputs:
+  ~/.openclaw/state/welcomeiq/docs-2026-10-20/ (build-docs.mjs, sofia-*.txt, server-records.json).
+- Root-cause leads (server log): R1 discards caller_name volunteered before contact capture; extracted_data on correction/closing turns
+  replaces stored contact details with nulls (final records lose name/number); R4 still closes with incomplete contact; out-of-scope website
+  requests accepted; turns of 3.5-8.9 s. Specialist posted these to Arsalan at 17:19 EDT and asked whether to put fixes for (1)-(3) on test/ branches.
+- OpenClaw gateway: "SQLite session write failed" made one specialist turn fail at 21:18Z ("Agent database execution lost its native owner").
+  A retry with a new session worked. Together with the intermittent "slack ingress drain failed: unable to open database file", watch this:
+  if it recurs, the specialist may miss Arsalan's messages.
