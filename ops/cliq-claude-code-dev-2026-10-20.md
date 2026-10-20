@@ -36,6 +36,19 @@ Live checks on this Mac, all read-only or in scratch folders:
 - `chatgpt/executor-cliq-settings.json`: the allowlist names individual read-only Zoho Projects and WorkDrive tools. The deny list keeps every existing executor rule, and adds the Zia gateway tools plus the Claude credential files.
 - **Blocked:** writing the Cliq profile into `chatgpt/executor.js` was refused by Claude Code's auto-mode permission check ("Create Unsafe Agents"). The bridge change depends on it and was not written. Not tested: a closed-task refusal (no closed task id was at hand).
 
+## Settings hardening after the audit thread's review (commit after 8b99751)
+The audit thread found three gaps in the first version of executor-cliq-settings.json:
+1. **Push refspecs.** `git push origin cliq/x:main` might pass a `cliq/` push rule and land on main, which auto-deploys. **Fixed** by removing all push permissions: Cliq-started runs commit on a local `cliq/` branch, and `Bash(git push:*)` is denied outright. Pushing becomes a separate, controlled step.
+2. **Credential files were readable.** **Fixed** by adding these denies: `~/.openclaw/**`, `~/*token*`, `~/**/*token*.json`, `~/**/*secret*`, `~/**/*credential*`, `~/.agent-bus/*.json`, `~/.agent-bus/claude-code/**`.
+3. **Edit/Write under ~/Developer plus test and build commands can execute any code.** This is a policy decision for Damian, not a fix.
+
+Verified in headless runs with decoys only (no real secret was read):
+- **Denied:** reading a decoy token file in `~/.agent-bus/exec`; reading under `~/.openclaw`; `git push origin cliq/x:main`; `git push -u origin cliq/x`; `git checkout -b other/branch`; the compound `git checkout -b cliq/a; git push origin main`.
+- **Allowed:** reading `README.md`; `git checkout -b cliq/test-branch` with the glob rule.
+
+**Finding about the rule syntax:** a `Bash(git checkout -b cliq/:*)` rule did NOT match `git checkout -b cliq/x`. A `prefix:*` rule needs a word break after the prefix, so the branch rules now use the glob form `cliq/*`.
+**Production note:** the live ChatGPT executor's `chatgpt/executor-settings.json` uses the same `chatgpt/:*` form, so its branch-creation and push rules probably never match. Delegated runs most likely cannot create `chatgpt/*` branches or push. That is a functional gap rather than a security hole. It was not changed, because it is production.
+
 ## Production approvals still required
 1. Permission for a Claude Code session to write the executor and bridge Cliq profile. Alternatively, Damian writes or reviews it himself.
 2. Create `#oc-claude-code` and add `claude-code` to `OC_CHANNELS` on the relay (Render).

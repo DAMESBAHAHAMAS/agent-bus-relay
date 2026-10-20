@@ -4,7 +4,7 @@
       "Read", "Glob", "Grep", "WebSearch", "ToolSearch", "TodoWrite",
       "Edit(~/Developer/**)", "Write(~/Developer/**)", "Edit(~/.agent-bus/exec/**)", "Write(~/.agent-bus/exec/**)",
       "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git branch:*)", "Bash(git add:*)", "Bash(git commit:*)",
-      "Bash(git fetch:*)", "Bash(git switch -c cliq/:*)", "Bash(git checkout -b cliq/:*)", "Bash(git push -u origin cliq/:*)", "Bash(git push origin cliq/:*)",
+      "Bash(git fetch:*)", "Bash(git switch -c cliq/*)", "Bash(git checkout -b cliq/*)",
       "Bash(node --test:*)", "Bash(npm test:*)", "Bash(npm run test:*)", "Bash(npm run build:*)", "Bash(npm run lint:*)", "Bash(npx tsc:*)", "Bash(python3 -m pytest:*)", "Bash(ls:*)",
 
       "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_portals",
@@ -37,6 +37,9 @@
       "Read(~/.openclaw/credentials/**)", "Read(~/.openclaw/service-env/**)", "Read(~/.openclaw/openclaw.json)",
       "Read(~/Developer/local-credentials/**)", "Read(~/Library/Keychains/**)", "Read(**/.env)", "Read(**/.env.*)",
       "Read(~/.claude.json)", "Read(~/.claude/.credentials.json)",
+      "Read(~/.openclaw/**)", "Read(~/*token*)", "Read(~/**/*token*.json)", "Read(~/**/*secret*)", "Read(~/**/*credential*)",
+      "Read(~/.agent-bus/*.json)", "Read(~/.agent-bus/claude-code/**)",
+      "Bash(git push:*)",
       "Edit(~/Developer/agent-bus-relay/**)", "Write(~/Developer/agent-bus-relay/**)",
       "Edit(~/Developer/agent-bus-relay-cliq-dev/**)", "Write(~/Developer/agent-bus-relay-cliq-dev/**)",
       "Edit(~/.agent-bus/claude-code/**)", "Write(~/.agent-bus/claude-code/**)",
