@@ -10,7 +10,6 @@
    "Bash(git diff:*)",
    "Bash(git log:*)",
    "Bash(git show:*)",
-   "Bash(git branch:*)",
    "Bash(git fetch:*)",
    "Bash(ls:*)",
    "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_portals",
@@ -90,7 +89,8 @@
    "Edit(~/Developer/**)",
    "Write(~/Developer/**)",
    "Bash(git add:*)",
-   "Bash(git commit:*)"
+   "Bash(git commit:*)",
+   "Bash(git branch:*)"
   ]
  },
  "_about": "TEST-ONLY profile for approval B (20 Oct 2026): copy of 57c093f with writes limited to ~/.agent-bus/exec/cliq-test, no git add/commit/branch, no build/test commands, no WebSearch. Not for production."
