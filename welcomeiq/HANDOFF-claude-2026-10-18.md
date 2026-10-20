@@ -218,3 +218,18 @@ Turns 12/16; audio 129 s / 146 s; interruption rate 0 / 0.41.
 - Damian 2026-10-18: "We are not testing simultaneous calls right now." concurrent3 preset removed from coval-ops.mjs; specialist told.
 - 2026-10-18 evening: Damian asked to push the 3 commits. Pushing main (rebase + push) was blocked by the auto-mode safety check (WelcomeIQ is not in APPROVED_PROJECTS; main auto-deploys the relay). Pushed instead to branch welcomeiq/coval-connection-2026-10-18 (no deploy). Merging to main waits for the APPROVED_PROJECTS entry or Damian.
 - 2026-10-19: Standing order. Owner decisions are filed in the Notion Executive Decision register (Systems & Automation). Filed 5 WelcomeIQ items (commands allowFrom; Max login; Zoho placement; delete temp branch; retire Cliq relay code). The native-tool gap on the other six agents was already fixed by another session (ops/tool-guards-verification-2026-10-19.md).
+
+## Update 2026-10-20 ~16:45 EDT
+- MISSED REQUEST: Arsalan asked on Oct 19 08:03 EDT (and again Oct 20 12:16 EDT) for 4 simulations plus one document per simulation.
+  The specialist correctly said Claude Code runs them, but nothing notified this session, so it sat ~33 h. Fixed: scheduled task
+  trig_011qMxMvLYckV1d1qjzMbzaU wakes this session Mon-Sat 08:47 and 12:47 ET to read C0CAZSHTJ48 and act.
+- Arsalan settled (Oct 19): scope = message-taking intake for FileFloridaLLC (no booking/transfer/prices); latency bar target <=1.5 s,
+  acceptable <=2.0 s, any turn >3.0 s fails; never close with wrong or unconfirmed contact details; never claim to be human or promise
+  transfers/callback times; every run Iterations=1, Concurrency=1; BUSINESS_SERVICES_DESCRIPTION is filled on the test deployment; the test
+  number is answered by the latest feature/streaming-pipeline commit; code fixes go on test/[TEST NAME] branches; priority #1 scenario = Adaeze
+  Okonkwo-Baptiste (first-name correction must keep the surname).
+- Arsalan's own runs (Oct 19): AM-Stress-Capture-1 cm9ip8VWys25ECtfBt3Fn9 (critical failure DENIED_BEING_AI) and AM-Stress-Capture-2
+  mwyRiBdyksVs5P4kZqP3nF (HUMAN_REQUEST_IGNORED).
+- coval-ops.mjs: optional persona (kent|luis|emma|lisa). Queue started 20:40:55Z, sequential: kent/clean 7b2ECP5UuGiSZdrCNyrehG, then luis/clean,
+  emma/stress, lisa/stress. Log: ~/.openclaw/state/welcomeiq/runs-2026-10-20.log. Next: one document per simulation.
+- Slack: intermittent "slack ingress drain failed: unable to open database file" in the gateway log (39 today). Messages still flow. Watching.

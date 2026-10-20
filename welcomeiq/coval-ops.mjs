@@ -2,12 +2,14 @@
 // Uses the WelcomeIQ-only OAuth sign-in (coval-oauth.mjs). Prints no credentials.
 //   node coval-ops.mjs inventory          read-only: agents, test sets, personas, recent runs
 //   node coval-ops.mjs result <run_id>    read-only: status and per-call metrics
-//   node coval-ops.mjs run <preset>       starts ONE run from a named preset below; nothing else can be launched
+//   node coval-ops.mjs run <preset> [persona]  starts ONE run from a named preset (optionally another listed persona)
 import {remoteClient} from './coval-oauth.mjs';
 
 const AGENT = 'GANBuxiCnWTkC6PYVFTC47'; // "My agent", calls the designated WelcomeIQ test number
 const METRICS = ['422Q5Yoem7MyWbHkPHbF8Y', 'nnjctAC9urMbTUsaVGQXm8', 'asiU5hscj4CjWn6qRAmdda', 'aRtf5Tow8K3ZxtQzivYiGp',
   'NRM5evhy98nutHSLyMG9GX', 'HXnLU7V6gtU9gMdcDowLxY', '29BlkepvvX19ebbLDB0y6Q', 'fstokU4ev5UmT8sUBexiwV'];
+// Personas Arsalan has asked for (Coval Default workspace).
+const PERSONAS = {kent: 'gjxBaQEtnaBdEV6XJmjmfp', luis: 'hVq2rJXtK2cfeyFm6vDW69', emma: 'VsaCLbZtxnzEu2TYFNoQLB', lisa: 'KrD2fsDsSgYfxo63kg9w5y'};
 const PRESETS = {
   // Same persona and test set as Arsalan's Oct 14/15 runs, so results compare like for like.
   baseline: {persona_id: 'gjxBaQEtnaBdEV6XJmjmfp', test_set_id: 'ickuZTc8', options: {iteration_count: 1, concurrency: 1}},
@@ -41,12 +43,14 @@ try {
     console.log(JSON.stringify({id: run.run_id, status: run.status, created: run.create_time, updated: run.update_time, error: run.error, progress: run.progress}));
     for (const m of Object.values(run.results?.metrics ?? {}))
       console.log(m.metric_name.replace(/\s+/g, ' ').padEnd(32), JSON.stringify(m.values.map(v => typeof v.value === 'number' ? Math.round(v.value * 100) / 100 : v.value)));
-  } else if (mode === 'run' && PRESETS[arg]) {
+  } else if (mode === 'run' && PRESETS[arg] && (!process.argv[4] || PERSONAS[process.argv[4]])) {
+    const persona = process.argv[4];
     const r = await call(c, 'create_run', {agent_id: AGENT, metric_ids: METRICS, ...PRESETS[arg],
-      tags: ['welcomeiq', 'claude-code', arg, new Date().toISOString().slice(0, 10)]});
-    console.log(JSON.stringify({started: r.run.run_id, status: r.run.status, preset: arg}));
+      ...(persona ? {persona_id: PERSONAS[persona]} : {}),
+      tags: ['welcomeiq', 'claude-code', arg, persona || 'kent', new Date().toISOString().slice(0, 10)]});
+    console.log(JSON.stringify({started: r.run.run_id, status: r.run.status, preset: arg, persona: persona || 'kent'}));
   } else {
-    console.error('Use: inventory | result <run_id> | run <' + Object.keys(PRESETS).join('|') + '>');
+    console.error('Use: inventory | result <run_id> | run <' + Object.keys(PRESETS).join('|') + '> [' + Object.keys(PERSONAS).join('|') + ']');
     process.exitCode = 2;
   }
 } finally {
