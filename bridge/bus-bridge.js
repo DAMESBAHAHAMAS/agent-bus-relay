@@ -28,7 +28,7 @@ const SPM_SERVICE = "srv-dafunn2jnfac739on6fg";
 const MAX_ATTEMPTS = 2;
 // which wake path each agent uses
 const KINDS = Object.assign({ bizops: "openclaw", finance: "openclaw", salesmkt: "openclaw", systems: "openclaw", compliance: "openclaw", codedev: "openclaw",
-  gpt: "openclaw", maryalice: "openclaw", "claude-code": "claude", "zia-projects": "zia",
+  gpt: "openclaw", maryalice: "openclaw", "claude-code": "claude", "zia-projects": "openclaw",
   "claude-bizops": "claude", "claude-finance": "claude", "claude-salesmkt": "claude", "claude-systems": "claude", "claude-compliance": "claude" }, JSON.parse(process.env.BUS_AGENT_KINDS || "{}"));
 const CHILD_ENV = Object.assign({}, process.env, { PATH: NODE_DIR + ":" + path.join(HOME, ".local/bin") + ":/opt/homebrew/bin:/usr/bin:/bin:" + (process.env.PATH || "") });
 
@@ -82,7 +82,7 @@ function run(bin, args, opts) {
     (err, stdout, stderr) => resolve({ err, stdout: String(stdout || ""), stderr: String(stderr || "") })));
 }
 // Bus name -> OpenClaw agent id, where they differ. Mary-Alice is OpenClaw's default agent "main".
-const OPENCLAW_IDS = Object.assign({ maryalice: "main" }, JSON.parse(process.env.BUS_OPENCLAW_IDS || "{}"));
+const OPENCLAW_IDS = Object.assign({ maryalice: "main", "zia-projects": "projects" }, JSON.parse(process.env.BUS_OPENCLAW_IDS || "{}"));
 async function wakeOpenClaw(agent, prompt, env) {
   const session = env.session || (env.sender_class === "outside" ? "agent-bus-outside" : "agent-bus");
   const r = await run(OPENCLAW, ["agent", "--agent", OPENCLAW_IDS[agent] || agent, "--session-key", session, "--message", prompt, "--json", "--timeout", String(RUN_TIMEOUT_S)]);
