@@ -200,6 +200,17 @@ async function handleChannel(agent, key, m) {
   busy.add(k); attempts.set(k, (attempts.get(k) || 0) + 1);
   log(agent, "woken by Damian in its Cliq channel, message", m.id);
   try {
+    // "task <project_id>/<task_id>: ..." from Damian in Claude Code's channel runs a full Claude Code session for that Zoho task
+    // (chatgpt/executor.js, Cliq profile). Marked done before it starts: an assignment is never run twice, even after a restart.
+    const assignment = agent === "claude-code" ? executor.cliqAssignment(m) : null;
+    if (assignment) {
+      done.add(k); save();
+      const post = async (text) => { const r = await api(key, "POST", "/channel", { text: text.slice(0, 3400), in_reply_to: m.id });
+        if (r.status !== 201) log(agent, "could not post Cliq run update for", m.id, "HTTP", r.status); };
+      await executor.executeCliq(assignment, { post, claudeBin: CLAUDE, childEnv: CHILD_ENV, log: (...x) => log(agent, ...x) });
+      log(agent, "finished Cliq assignment", m.id);
+      return;
+    }
     const prompt = "[CLIQ - Damian, in your own channel. Verified from his own Cliq account, message " + m.id + ".]\n" +
       "<<<DAMIAN\n" + m.text + "\nDAMIAN>>>\n\nAnswer Damian directly and briefly. Your reply is posted to your Cliq channel automatically. Act within your existing authority and rules.";
     const result = await WAKE[KINDS[agent]](agent, prompt, { session: "cliq-channel-v2" });   // v2 (19 Oct): the v1 sessions were archived to start fresh; OpenClaw refuses new work on an archived key
@@ -219,6 +230,8 @@ async function loop(agent) {
   // A delegated run cut short by a restart is reported as interrupted, never left looking "in progress".
   if (agent === "claude-code") executor.recoverInterrupted((cid, type, text) => api(key, "POST", "/messages", { to: "chatgpt", type, correlation_id: cid, payload: text }))
     .then((cid) => cid && log(agent, "reported interrupted delegated run", cid)).catch(() => {});
+  if (agent === "claude-code") executor.recoverCliqInterrupted((m, text) => api(key, "POST", "/channel", { text, in_reply_to: m.message_id }))
+    .then((m) => m && log(agent, "reported interrupted Cliq run", m.cid)).catch(() => {});
   for (;;) {
     try {
       const r = await api(key, "GET", "/wait?since=" + since + "&timeout=25", null, 45000);
