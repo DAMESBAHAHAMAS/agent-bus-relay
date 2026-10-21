@@ -199,16 +199,34 @@ async function handleChannel(agent, key, m) {
   if (busy.has(k) || done.has(k) || (attempts.get(k) || 0) >= MAX_ATTEMPTS) return;
   busy.add(k); attempts.set(k, (attempts.get(k) || 0) + 1);
   log(agent, "woken by Damian in its Cliq channel, message", m.id);
+  // Every message Damian sends gets an answer (21 Oct): a receipt if the agent is still working after 30 s,
+  // and a plain failure notice if every attempt fails. Both are labelled as coming from the bridge, never from the agent.
+  const notice = (text) => api(key, "POST", "/channel", { text, in_reply_to: m.id }).catch(() => {});
+  let replied = false;
+  const receipt = (attempts.get(k) || 0) === 1 ? setTimeout(() => { if (!replied) notice("Received. " + agent + " is working on it. (Receipt from the Mac bridge, not from " + agent + ".)"); }, 30000) : null;
   try {
     const prompt = "[CLIQ - Damian, in your own channel. Verified from his own Cliq account, message " + m.id + ".]\n" +
       "<<<DAMIAN\n" + m.text + "\nDAMIAN>>>\n\nAnswer Damian directly and briefly. Your reply is posted to your Cliq channel automatically. Act within your existing authority and rules.";
     const result = await WAKE[KINDS[agent]](agent, prompt, { session: "cliq-channel-v2" });   // v2 (19 Oct): the v1 sessions were archived to start fresh; OpenClaw refuses new work on an archived key
-    if (!result.ok) { log(agent, "produced no channel reply for", m.id, "(" + result.status + ")"); return; }
+    replied = true; if (receipt) clearTimeout(receipt);
+    if (!result.ok) {
+      log(agent, "produced no channel reply for", m.id, "(" + result.status + ")");
+      if ((attempts.get(k) || 0) >= MAX_ATTEMPTS) {
+        await notice("NOT DONE: " + agent + " could not answer your message (" + result.status + ") after " + MAX_ATTEMPTS + " attempts. Nothing was confirmed. Please send it again. (Notice from the Mac bridge, not from " + agent + ".)");
+        log(agent, "posted a failure notice for", m.id);
+      }
+      return;
+    }
     if (/^\s*NO_REPLY\s*$/.test(result.text)) { done.add(k); save(); log(agent, "chose not to reply to", m.id); return; }   // OpenClaw's "nothing to say": post nothing
     const r = await api(key, "POST", "/channel", { text: result.text.slice(0, 3400), in_reply_to: m.id });
     if (r.status === 201) { done.add(k); save(); log(agent, "replied in its channel", r.json.message_id); }
-    else log(agent, "could not post its channel reply, HTTP", r.status, JSON.stringify(r.json).slice(0, 160));
-  } finally { busy.delete(k); }
+    else {
+      log(agent, "could not post its channel reply, HTTP", r.status, JSON.stringify(r.json).slice(0, 160));
+      // The agent did answer but the relay refused the post (e.g. withheld content): still tell Damian.
+      const n = await api(key, "POST", "/channel", { text: "Received and answered, but the reply could not be posted here (HTTP " + r.status + (r.json && r.json.detail ? ": " + String(r.json.detail).slice(0, 120) : "") + "). (Notice from the Mac bridge, not from " + agent + ".)", in_reply_to: m.id }).catch(() => null);
+      if (n && n.status === 201) { done.add(k); save(); log(agent, "posted a reply-withheld notice for", m.id); }
+    }
+  } finally { busy.delete(k); clearTimeout(receipt); }
 }
 
 async function loop(agent) {
