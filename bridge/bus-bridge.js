@@ -31,6 +31,21 @@ const KINDS = Object.assign({ bizops: "openclaw", finance: "openclaw", salesmkt:
   gpt: "openclaw", maryalice: "openclaw", "claude-code": "claude", "zia-projects": "openclaw",
   "claude-bizops": "claude", "claude-finance": "claude", "claude-salesmkt": "claude", "claude-systems": "claude", "claude-compliance": "claude" }, JSON.parse(process.env.BUS_AGENT_KINDS || "{}"));
 const CHILD_ENV = Object.assign({}, process.env, { PATH: NODE_DIR + ":" + path.join(HOME, ".local/bin") + ":/opt/homebrew/bin:/usr/bin:/bin:" + (process.env.PATH || "") });
+// Damian approved 24 Oct 2026: these functions get read-only Zoho Tables tools, for internal senders only. Nothing else runs (dontAsk denies every unlisted tool).
+const READ_TOOL_AGENTS = new Set(["claude-finance", "claude-systems"]);
+const TABLES = "mcp__claude_ai_Tables__ZohoTables_";
+const TABLES_READ = ["getTable", "getBase", "getBaseById", "getField", "getRecord", "getSelectionOption", "getView", "listBases", "listFields",
+  "listFieldTypes", "listRecords", "listSelectionOptions", "listTables", "listViews", "searchBases", "searchRecords"].map((t) => TABLES + t);
+// every other connector is removed from these runs so only Tables loads (and the prompt stays within limits)
+const OTHER_MCP = ["claude_ai_Claude_Docs", "claude_ai_ElevenLabs", "claude_ai_ElevenLabs__2_", "claude_ai_Runway", "claude_ai_OpusClip", "claude_ai_fal",
+  "claude_ai_Fal", "claude_ai_Slack", "claude_ai_Dashboard-Analytics", "claude_ai_Canva", "claude_ai_ZIA_AGENT_API_X", "claude_ai_Digital-Notebook",
+  "claude_ai_Microsoft_365", "claude_ai_Workdrive", "claude_ai_Stripe", "claude_ai_Postman", "claude_ai_Learn-Connection", "claude_ai_work-breakdown-structure",
+  "claude_ai_Data-Operations", "claude_ai_Mail-Reading-Search-v2", "claude_ai_Supabase", "claude_ai_Render", "claude_ai_Zoho_Desk", "claude_ai_Zoho_CRM",
+  "claude_ai_Notion", "github", "zoho-mail", "plaid", "fal-ai"].map((s) => "mcp__" + s);
+const TABLES_WRITE = ["bulkCreateFields", "bulkCreateFilters", "bulkCreateSelectionOptions", "bulkCreateSorts", "bulkUpdateRecords", "createAction",
+  "createAutomation", "createBase", "createField", "createFilter", "createRecord", "createRecords", "createSelectionOption", "createSort", "createTable",
+  "createView", "updateAction", "updateAutomation", "updateBase", "updateField", "updateFilter", "updatePortal", "updatePrimaryField", "updateRecord",
+  "updateRecords", "updateSelectionOption", "updateSort", "updateTable", "updateTrigger", "updateView"].map((t) => TABLES + t);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = (...a) => console.log(new Date().toISOString(), ...a);
@@ -105,8 +120,9 @@ function refreshContext(dir) {
     try { const text = fs.readFileSync(s.from, "utf8"); fs.writeFileSync(path.join(dir, to), text.slice(0, 65536)); } catch (e) { log("context file unavailable for", path.basename(dir), to); }
   }
 }
-async function wakeClaude(agent, prompt) {
+async function wakeClaude(agent, prompt, env) {
   const dir = path.join(AGENT_HOME, agent);
+  const reader = READ_TOOL_AGENTS.has(agent) && Boolean(env) && env.sender_class === "internal";
   fs.mkdirSync(dir, { recursive: true });
   refreshContext(dir);
   const role = ROLES[agent];
