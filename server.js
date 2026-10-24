@@ -333,6 +333,8 @@ let OC = {};
 try { OC = JSON.parse(env("OC_CHANNELS", "{}")); } catch (e) { OC = {}; }
 const OC_ALERTS = env("OC_ALERTS_CHAT", "");
 const OC_POLL_MS = Math.max(30000, Number(env("OC_POLL_S", "60")) * 1000);
+const OC_PRIORITY = env("OC_PRIORITY", "maryalice");
+const OC_PRIORITY_MS = Math.max(20000, Number(env("OC_PRIORITY_S", "20")) * 1000);
 const ocState = new Map();   // agent -> { lastRead, seen: Set, inbox: [] }
 const ocPosted = new Set();  // ids of messages the relay itself posted (agent replies, alerts)
 const ocId = (id) => String(id || "").replace(/[ _]/g, "");
@@ -350,10 +352,12 @@ async function ocPoll(hinted) {
   if (!agents.length || !SIGNING) return;
   reads = reads.filter((t) => Date.now() - t < 60000);
   // read the oldest-checked channel only (or the one a push hint names), and leave headroom for #agent-bus
-  const a = hinted || agents.map((x) => [x, (ocState.get(x) || {}).lastRead || 0]).sort((p, q) => p[1] - q[1])[0][0];
+  // Damian's priority channel (OC_PRIORITY, default Mary-Alice) is read every OC_PRIORITY_S seconds (min 20 s, so other channels keep alternate reads within the Zoho budget) (24 Oct).
+  const pri = agents.includes(OC_PRIORITY) && Date.now() - ((ocState.get(OC_PRIORITY) || {}).lastRead || 0) >= OC_PRIORITY_MS ? OC_PRIORITY : null;
+  const a = hinted || pri || agents.map((x) => [x, (ocState.get(x) || {}).lastRead || 0]).sort((p, q) => p[1] - q[1])[0][0];
   const st = ocState.get(a) || { lastRead: 0, seen: new Set(), inbox: [] };
   ocState.set(a, st);
-  if (Date.now() - st.lastRead < (hinted ? OC_HINT_MIN_MS : OC_POLL_MS) || reads.length >= READS_PER_MIN - 3) return false;
+  if (Date.now() - st.lastRead < (hinted ? OC_HINT_MIN_MS : a === pri ? OC_PRIORITY_MS : OC_POLL_MS) || reads.length >= READS_PER_MIN - 3) return false;
   st.lastRead = Date.now();
   try {
     reads.push(Date.now());

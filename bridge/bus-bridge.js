@@ -228,9 +228,10 @@ async function handleChannel(agent, key, m) {
     let result;
     for (let n = 1; ; n++) {
       result = await WAKE[KINDS[agent]](agent, prompt, { session: "cliq-channel-v2" });   // v2 (19 Oct): the v1 sessions were archived to start fresh; OpenClaw refuses new work on an archived key
-      if (result.ok || Date.now() + 20000 > until) break;
-      log(agent, "wake", n, "failed for", m.id, "(" + result.status + "); retrying in 20 s");
-      await sleep(20000);
+      const wait = n <= 3 ? 5000 : 20000;   // quick retries first: most failures clear within seconds
+      if (result.ok || Date.now() + wait > until) break;
+      log(agent, "wake", n, "failed for", m.id, "(" + result.status + "); retrying in " + wait / 1000 + " s");
+      await sleep(wait);
     }
     replied = true; if (receipt) clearTimeout(receipt);
     if (!result.ok) {
