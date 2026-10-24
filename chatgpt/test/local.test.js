@@ -212,6 +212,31 @@ test("delegate_task: hidden unless switched on; posts the task to claude-code; i
   assert.strictEqual(done.state, "completed"); assert.match(done.response, /abc123/);
   assert.deepStrictEqual({ kind: seen.payload.kind, task: seen.payload.task_id, from: seen.from, cls: seen.sender_class }, { kind: "delegated_task", task: "1156860000000000002", from: "chatgpt", cls: "outside" });
 });
+test("read_channel: only classified project/function channels listed on the relay; read-only; secrets withheld; personal channels refused", async () => {
+  const SYS = "CT_1424665092475656932_665429212", MARY = "CT_1424665092475708917_665429212", BUS = "CT_1424665089452738432_665429212";
+  const t0 = Date.now();
+  chats[SYS] = [
+    { id: "s1", time: t0 - 3000, sender: { id: DAMIAN, name: "Damian Knowles" }, content: { text: "task 1156860000000000001/1156860000000000002: add the README line" } },
+    { id: "s2", time: t0 - 2000, sender: { id: DAMIAN, name: "Damian Knowles" }, content: { text: "STATUS: STARTED cliq-0123 on task 1156860000000000002" } },
+    { id: "s3", time: t0 - 1000, sender: { id: DAMIAN, name: "Damian Knowles" }, content: { text: "use sk-abcdefghijklmnopqrstuvwxyz123456 for it" } }];
+  chats[MARY] = [{ id: "m1", time: t0, sender: { id: DAMIAN, name: "Damian Knowles" }, content: { text: "personal note" } }];
+  const before = JSON.stringify(chats);
+  assert.ok(!(await mcp(B, "tools/list", {}, access)).json.result.tools.some((t) => t.name === "read_channel"), "hidden when no channel is approved");
+  // Mary-Alice and #agent-bus are listed on the relay by mistake, plus an unclassified id: all three must be rejected by classification.
+  const R = await startRelay({ CHATGPT_READ_CHANNELS: [SYS, MARY, BUS, "CT_9999_unclassified"].join(","), PUBLIC_BASE_URL: B });
+  const tool = (await mcp(R, "tools/list", {}, access)).json.result.tools.find((t) => t.name === "read_channel");
+  assert.ok(tool && tool.annotations.readOnlyHint === true);
+  const call = async (a) => (await mcp(R, "tools/call", { name: "read_channel", arguments: a }, access)).json.result.structuredContent;
+  assert.deepStrictEqual((await call({})).channels.map((c) => c.channel), ["ocsystemsautomation"]);
+  const r = await call({ channel: "ocsystemsautomation" });
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.messages.map((m) => m.id), ["s1", "s2", "s3"], "oldest first");
+  assert.match(r.messages[0].text, /task 1156860000000000001\/1156860000000000002/);
+  assert.match(r.messages[2].text, /^\[withheld/); assert.ok(!/sk-abc/.test(JSON.stringify(r)), "secret never returned");
+  assert.deepStrictEqual((await call({ channel: "ocsystemsautomation", since: r.messages[1].time })).messages.map((m) => m.id), ["s3"]);
+  for (const ch of ["occommand", "agentbus", "muse", "assistant", "nonexistent"]) assert.strictEqual((await call({ channel: ch })).error, "channel_not_allowed", ch);
+  assert.strictEqual(JSON.stringify(chats), before, "nothing posted to any channel");
+});
 test("unauthorized recipients and secrets are refused", async () => {
   const r = (await mcp(B, "tools/call", { name: "ask_claude_code", arguments: { message: "hi", idempotency_key: "test-key-0002", recipient: "finance" } }, access)).json.result;
   assert.strictEqual(r.isError, true); assert.strictEqual(r.structuredContent.error, "recipient_not_allowed");
