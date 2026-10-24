@@ -207,7 +207,15 @@ async function handleChannel(agent, key, m) {
   try {
     const prompt = "[CLIQ - Damian, in your own channel. Verified from his own Cliq account, message " + m.id + ".]\n" +
       "<<<DAMIAN\n" + m.text + "\nDAMIAN>>>\n\nAnswer Damian directly and briefly. Your reply is posted to your Cliq channel automatically. Act within your existing authority and rules.";
-    const result = await WAKE[KINDS[agent]](agent, prompt, { session: "cliq-channel-v2" });   // v2 (19 Oct): the v1 sessions were archived to start fresh; OpenClaw refuses new work on an archived key
+    // A failed wake (e.g. the OpenClaw gateway restarting) is retried every 20 s for up to 10 minutes before it counts as one failed attempt (24 Oct).
+    const until = Date.now() + 600000;
+    let result;
+    for (let n = 1; ; n++) {
+      result = await WAKE[KINDS[agent]](agent, prompt, { session: "cliq-channel-v2" });   // v2 (19 Oct): the v1 sessions were archived to start fresh; OpenClaw refuses new work on an archived key
+      if (result.ok || Date.now() + 20000 > until) break;
+      log(agent, "wake", n, "failed for", m.id, "(" + result.status + "); retrying in 20 s");
+      await sleep(20000);
+    }
     replied = true; if (receipt) clearTimeout(receipt);
     if (!result.ok) {
       log(agent, "produced no channel reply for", m.id, "(" + result.status + ")");
