@@ -248,3 +248,13 @@ Turns 12/16; audio 129 s / 146 s; interruption rate 0 / 0.41.
 - OpenClaw gateway: "SQLite session write failed" made one specialist turn fail at 21:18Z ("Agent database execution lost its native owner").
   A retry with a new session worked. Together with the intermittent "slack ingress drain failed: unable to open database file", watch this:
   if it recurs, the specialist may miss Arsalan's messages.
+
+## SESSION CLOSEOUT 2026-10-24 ~21:00 UTC (Damian's closeout standard, relayed by agent-bus-relay-e5)
+- State: idle. No runs in progress. All WelcomeIQ work is committed on agent-bus-relay main; reports are on damianknowles/omnichannel-voice-intake
+  branch test/coval-reports-2026-10-20 (3d76ac1).
+- Waiting on Arsalan since 2026-10-20 17:19 EDT: whether to put fixes for (1) early-name discard (R1), (2) correction overwriting contact
+  details, (3) closing with missing/wrong details on test/ branches. No reply after 4 days of checks.
+- Services verified: OpenClaw gateway healthz 200; Slack socket connected 20:48Z. Scheduled task trig_011qMxMvLYckV1d1qjzMbzaU
+  (Mon-Sat 08:47/12:47 ET) stays on: it resumes this work in this session. Not restarted: gateway, bridge.
+- Resume: read this file + memory welcomeiq-ownership; tools welcomeiq/coval-ops.mjs (presets baseline/stress, personas kent/luis/emma/lisa).
+- Owner decisions: 5 WelcomeIQ items already in the Notion register (Systems & Automation); nothing new.
