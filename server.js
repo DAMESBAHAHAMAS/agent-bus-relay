@@ -520,7 +520,9 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://x");
     if(await welcomeIQ(req,res,url)) return;
     if (req.method === "GET" && url.pathname === "/healthz") {
-      return send(res, 200, { ok: true, version: 7, channel: CHANNEL, configured: Boolean(CHANNEL && CHAT_ID && KEYS.size && SIGNING) });
+      // oc_priority / oc_priority_s: the live priority-channel setting, so it can be recorded before and after an OC_PRIORITY change (24 Oct). Not secret.
+      return send(res, 200, { ok: true, version: 7, channel: CHANNEL, configured: Boolean(CHANNEL && CHAT_ID && KEYS.size && SIGNING),
+        oc_priority: OC_PRIORITY, oc_priority_set: process.env.OC_PRIORITY !== undefined, oc_priority_s: OC_PRIORITY_MS / 1000 });
     }
     if (req.method === "POST" && url.pathname === "/cliq/oc-hint") {
       let chat = "";
