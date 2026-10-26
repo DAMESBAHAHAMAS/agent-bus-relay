@@ -285,7 +285,10 @@ module.exports = function chatgptConnector(d) {
     const instruction = typeof args.instruction === "string" ? args.instruction.trim() : "";
     if (!/^\d{6,25}$/.test(pid) || !/^\d{6,25}$/.test(tid)) return fail("invalid_task", "project_id and task_id are the numeric Zoho Projects ids.");
     if (!instruction || instruction.length > 2500) return fail("invalid_instruction", "instruction must be 1-2500 characters");
-    return send("delegate", "claude-code", String(args.idempotency_key || ""), { kind: "delegated_task", project_id: pid, task_id: tid, instruction }, instruction, waitOf(args, 20));
+    const repo = args.repo === undefined ? undefined : String(args.repo);
+    if (repo !== undefined && (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(repo) || /^agent-bus-relay/i.test(repo))) return fail("invalid_repo", "repo is the folder name of a repository under ~/Developer; the agent-bus relay itself cannot be a target.");
+    const payload = Object.assign({ kind: "delegated_task", project_id: pid, task_id: tid, instruction }, repo ? { repo } : {});
+    return send("delegate", "claude-code", String(args.idempotency_key || ""), payload, instruction, waitOf(args, 20));
   }
   async function send(tool, to, idem, payload, text, wait) {
     if (!/^[A-Za-z0-9_-]{8,100}$/.test(idem)) return fail("invalid_idempotency_key", "8-100 letters, digits, - or _");
@@ -379,6 +382,7 @@ module.exports = function chatgptConnector(d) {
         project_id: { type: "string", pattern: "^\\d{6,25}$", description: "Zoho Projects project id." },
         task_id: { type: "string", pattern: "^\\d{6,25}$", description: "Zoho Projects task id; the task must be open." },
         instruction: { type: "string", minLength: 1, maxLength: 2500, description: "What to do for this task." },
+        repo: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", description: "Only for a code change: the repository's folder name under ~/Developer. Claude Code then works in its own worktree on branch chatgpt/<task_id>-<name> and commits; the Mac bridge pushes that branch only and reports the verified commits." },
         idempotency_key: { type: "string", pattern: "^[A-Za-z0-9_-]{8,100}$" },
         wait_seconds: { type: "integer", minimum: 0, maximum: 45, default: 20 } } },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false }, securitySchemes: security, _meta: { securitySchemes: security } },
