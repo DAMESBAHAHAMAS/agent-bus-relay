@@ -35,3 +35,12 @@ GPT's `ask_claude_code` still goes to the tool-less reply. That is by design.
 - The bridge needs a restart to load the new executor. The relay needs a deploy for GPT to see `repo` on `delegate_task`.
 - Main has an uncommitted `chatgpt/executor.js` edit from another session (the same absolute-path line, included here word for word).
 - No live GPT -> relay -> bridge run of a repo task yet. Do one after the merge.
+
+## Integration and live acceptance (2026-10-26)
+- Rebased on 9e6a695 (Path 1's absolute-path line, kept once) and merged as 148fd3b after Path 1 (session agent-bus-relay-18) cleared it. Render deployed the relay (dep-dbfijcijnfac73eqbc50, live 10:22:06Z, as reported by Path 1).
+- Found live: the relay's Luhn card filter refused posts quoting 19-digit Zoho ids (HTTP 422 at 10:21Z and 10:23Z). Path 1's 5462d6e masks only the run's own ids in posted text; the filter is unchanged. The bridge restarted at 10:29:35Z on 5462d6e.
+- Run 1, cgpt-94fc79bbcc6b2cf80b8a (11:15Z): GPT's call carried no `repo` because ChatGPT's tool list was stale. The run correctly reported BLOCKED with no edits. Fixed by refreshing the app in ChatGPT.
+- Run 2, cgpt-2c636e94f4a1f620ae6b (11:23:56-11:24:30Z), Zoho SA5-T127, repo path2-acceptance: STATUS: COMPLETE.
+  - Origin branch `chatgpt/<task_id>-path-2-live-acceptance-gpt-delegate-task` is at 77f898a, one commit on ae60748, and changes slugify.js only.
+  - Independent check: a fresh clone of the pushed branch passes 2/2. Origin main is still ae60748, and the live checkout is on main and clean.
+  - The bridge evidence reported 1 commit, a clean tree, and "pushed to origin: yes, remote head matches". The ack and result were posted with no 422.
