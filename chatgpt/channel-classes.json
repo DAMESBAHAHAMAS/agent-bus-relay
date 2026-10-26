@@ -1,0 +1,22 @@
+{
+  "_about": "Cliq channel classification for ChatGPT's read_channel tool (Damian, 20 Oct 2026). Keyed by Cliq chat id, which never changes. ChatGPT may read a channel only if its class is in readable_classes AND its chat id is listed in the relay's CHATGPT_READ_CHANNELS. A channel missing from this file is unclassified and never readable. Personal, Mary-Alice, Muse and unrelated channels are never readable, whatever the relay setting says.",
+  "readable_classes": ["project", "function-execution"],
+  "channels": {
+    "CT_1424665092475599480_665429212": { "name": "ocbusinessoperations", "title": "#oc-business-operations", "class": "function-execution" },
+    "CT_1424665092475655574_665429212": { "name": "ocfinance", "title": "#oc-finance", "class": "function-execution" },
+    "CT_1424665092475656337_665429212": { "name": "ocsalesmarketing", "title": "#oc-sales-marketing", "class": "function-execution" },
+    "CT_1424665092475656932_665429212": { "name": "ocsystemsautomation", "title": "#oc-systems-automation", "class": "function-execution" },
+    "CT_1424665092475708307_665429212": { "name": "occompliancefilings", "title": "#oc-compliance-filings", "class": "function-execution" },
+    "CT_1424665093511648587_665429212": { "name": "seniorprojectsmanager", "title": "#oc-senior-projects-manager", "class": "project" },
+    "CT_1424665092025303095_665429212": { "name": "welcomeiqtesting", "title": "#welcomeiq-testing", "class": "project" },
+    "CT_1424665092475708917_665429212": { "name": "occommand", "title": "#Mary Alice", "class": "maryalice" },
+    "CT_1424665093498214845_665429212": { "name": "muse", "title": "#Muse", "class": "muse" },
+    "CT_1424665093498250155_665429212": { "name": "codex", "title": "#Codex", "class": "personal" },
+    "CT_2243211102327560436_665429212": { "name": "assistant", "title": "#assistant", "class": "personal" },
+    "CT_1424665089452738432_665429212": { "name": "agentbus", "title": "#agent-bus", "class": "bus" },
+    "CT_1424665092475709602_665429212": { "name": "ocalerts", "title": "#oc-alerts", "class": "alerts" },
+    "CT_1424665075394177688_665429212": { "name": "financereports", "title": "#finance-reports", "class": "function-reports" },
+    "CT_2198174172304582236_665429212": { "name": "desk", "title": "#desk", "class": "unrelated" },
+    "CT_2243191457667387468_665429212": { "name": "test", "title": "#Test", "class": "unrelated" }
+  }
+}

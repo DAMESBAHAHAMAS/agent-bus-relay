@@ -1,0 +1,55 @@
+{
+  "permissions": {
+    "allow": [
+      "Read", "Glob", "Grep", "WebSearch", "ToolSearch", "TodoWrite",
+      "Edit(~/Developer/**)", "Write(~/Developer/**)", "Edit(~/.agent-bus/exec/**)", "Write(~/.agent-bus/exec/**)",
+      "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git branch:*)", "Bash(git add:*)", "Bash(git commit:*)",
+      "Bash(git fetch:*)", "Bash(git switch -c cliq/*)", "Bash(git checkout -b cliq/*)",
+      "Bash(node --test:*)", "Bash(npm test:*)", "Bash(npm run test:*)", "Bash(npm run build:*)", "Bash(npm run lint:*)", "Bash(npx tsc:*)", "Bash(python3 -m pytest:*)", "Bash(ls:*)",
+
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_portals",
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_projects_list",
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_project_detail",
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_tasks_by_project",
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_task_details",
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_task_comments",
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_task_comment",
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_all_project_task_lists",
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_task_list_details",
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_project_phases",
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_phase_details",
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_project_issues",
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_issue",
+      "mcp__claude_ai_work-breakdown-structure__ZohoProjects_get_project_attachments",
+
+      "mcp__claude_ai_Workdrive__ZohoWorkdrive_File_Property",
+      "mcp__claude_ai_Workdrive__ZohoWorkdrive_Breadcrumbs_Of_File",
+      "mcp__claude_ai_Workdrive__ZohoWorkdrive_Fetch_Files_Folders",
+      "mcp__claude_ai_Workdrive__ZohoWorkdrive_Sub_Folders",
+      "mcp__claude_ai_Workdrive__ZohoWorkdrive_Get_Team_Folder_Files",
+      "mcp__claude_ai_Workdrive__ZohoWorkdrive_Get_Team_Folder_Folders",
+      "mcp__claude_ai_Workdrive__ZohoWorkdrive_Get_File_Preview",
+      "mcp__claude_ai_Workdrive__ZohoWorkdrive_Get_File_Summary",
+      "mcp__claude_ai_Workdrive__ZohoWorkdrive_Search_Records"
+    ],
+    "deny": [
+      "Read(~/.ssh/**)", "Read(~/.aws/**)", "Read(~/.config/gh/**)", "Read(~/.codex/**)", "Read(~/.zoho/**)",
+      "Read(~/.openclaw/credentials/**)", "Read(~/.openclaw/service-env/**)", "Read(~/.openclaw/openclaw.json)",
+      "Read(~/Developer/local-credentials/**)", "Read(~/Library/Keychains/**)", "Read(**/.env)", "Read(**/.env.*)",
+      "Read(~/.claude.json)", "Read(~/.claude/.credentials.json)",
+      "Read(~/.openclaw/**)", "Read(~/*token*)", "Read(~/**/*token*.json)", "Read(~/**/*secret*)", "Read(~/**/*credential*)",
+      "Read(~/.agent-bus/*.json)", "Read(~/.agent-bus/claude-code/**)",
+      "Bash(git push:*)",
+      "Edit(~/Developer/agent-bus-relay/**)", "Write(~/Developer/agent-bus-relay/**)",
+      "Edit(~/Developer/agent-bus-relay-cliq-dev/**)", "Write(~/Developer/agent-bus-relay-cliq-dev/**)",
+      "Edit(~/.agent-bus/claude-code/**)", "Write(~/.agent-bus/claude-code/**)",
+      "Edit(**/.claude/**)", "Write(**/.claude/**)", "Edit(**/CLAUDE.md)", "Write(**/CLAUDE.md)", "Edit(**/AGENTS.md)", "Write(**/AGENTS.md)",
+      "Edit(**/.github/workflows/**)", "Write(**/.github/workflows/**)", "Edit(**/render.yaml)", "Write(**/render.yaml)",
+      "Bash(git push --force:*)", "Bash(git push -f:*)", "Bash(git push origin main:*)", "Bash(git push origin master:*)",
+      "WebFetch",
+      "mcp__claude_ai_ZIA_AGENT_API_X__ask_senior_projects_manager",
+      "mcp__claude_ai_ZIA_AGENT_API_X__list_folder",
+      "mcp__claude_ai_ZIA_AGENT_API_X__read_file"
+    ]
+  }
+}
