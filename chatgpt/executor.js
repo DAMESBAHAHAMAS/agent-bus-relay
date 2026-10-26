@@ -191,16 +191,25 @@ function summarize(u) {
 const MARKER = path.join(WORK_ROOT, ".running.json");
 async function recoverInterrupted(postFor) {
   let m; try { m = JSON.parse(fs.readFileSync(MARKER, "utf8")); } catch (e) { return null; }
-  await postFor(m.cid, "result", "This notice is from the Mac bridge, not from Claude Code. The run for task " + m.task_id + " (started " + m.at +
+  await postFor(m.cid, "result", maskIds("This notice is from the Mac bridge, not from Claude Code. The run for task " + m.task_id + " (started " + m.at +
     ") was interrupted by a bridge restart and did not finish. Nothing was written to Zoho by this run. Send the same delegate_task again with a NEW idempotency_key.\n" +
-    "STATUS: BLOCKED: run interrupted by a bridge restart; retry with a new idempotency_key.");
+    "STATUS: BLOCKED: run interrupted by a bridge restart; retry with a new idempotency_key.", [m.task_id]));
   try { fs.unlinkSync(MARKER); } catch (e) {}
   return m.cid;
 }
 
+// The relay refuses any message with a 13-19 digit run that passes Luhn (its card filter), and 19-digit Zoho ids often do.
+// So bus posts shorten THIS run's own Zoho ids (project, task, and the comment and issues it wrote) to their last 6 digits.
+// Only those exact strings: any other long number, such as a real card number, still reaches the relay's filter and is refused.
+// Only the posted text changes; worktrees, branches and pushes keep the real ids.
+const maskIds = (text, ids) => (ids || []).filter((id) => /^\d{13,19}$/.test(String(id)))
+  .reduce((t, id) => t.split(String(id)).join("id…" + String(id).slice(-6)), String(text));
+
 let running = false;
 // post(type, text) posts on the bus to chatgpt under the same correlation id.
-async function execute(env, d, { post, claudeBin, childEnv, check = checkTask, run = runClaude, update = updateTask, log = () => {} }) {
+async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = checkTask, run = runClaude, update = updateTask, log = () => {} }) {
+  const own = [d.project_id, d.task_id];
+  const post = (type, text) => rawPost(type, maskIds(text, own));
   const cid = env.correlation_id;
   if (!enabled()) return post("result", "STATUS: BLOCKED: delegated execution is switched off on the Mac (" + SWITCH + " is absent).");
   if (d.invalid && d.reason === "repo") return post("result", "STATUS: BLOCKED: repo must be the plain folder name of a repository under ~/Developer, and the agent-bus relay itself cannot be a target.");
@@ -230,6 +239,7 @@ async function execute(env, d, { post, claudeBin, childEnv, check = checkTask, r
     let written = proposed;
     if (proposed && !proposed.invalid) written = await update(d.project_id, d.task_id, Object.assign({ cid }, proposed));
     log("delegated task", d.task_id, "zoho write-back:", JSON.stringify(written || {}).slice(0, 200));
+    if (written && !written.invalid) own.push(written.comment, ...(written.issues || []).map((i) => i.id));
     const status = /STATUS:\s*(COMPLETE|BLOCKED)/i.test(report) ? "" : "\n\nSTATUS: BLOCKED: the run did not state completion.";
     const zoho = "\n\n" + summarize(written) + "\n\n" + evidence;
     // The status line must stay last: keep it after the Zoho summary.
@@ -239,4 +249,4 @@ async function execute(env, d, { post, claudeBin, childEnv, check = checkTask, r
   } finally { running = false; try { fs.unlinkSync(MARKER); } catch (e) {} }
 }
 
-module.exports = { delegation, execute, recoverInterrupted, prompt, checkTask, runClaude, updateTask, splitReport, summarize, prepareRepo, verify, SETTINGS };
+module.exports = { delegation, execute, recoverInterrupted, maskIds, prompt, checkTask, runClaude, updateTask, splitReport, summarize, prepareRepo, verify, SETTINGS };

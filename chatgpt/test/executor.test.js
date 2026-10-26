@@ -117,3 +117,31 @@ test("a run that ends without a report still carries the bridge's evidence and i
   assert.match(res, /BRIDGE-VERIFIED EVIDENCE/);
   assert.match(res, /STATUS: BLOCKED: the run ended without a report \(timed_out\)/);
 });
+
+const posted = [];
+const LUHN_TASK = "1156860000009611011", LUHN_PROJECT = "1156860000009155003";   // real Zoho ids that pass the Luhn check
+test("posts mask this run's own Luhn-valid Zoho ids, while the push uses the real branch", async () => {
+  let branch;
+  const e = env({ project_id: LUHN_PROJECT, task_id: LUHN_TASK, repo: "demo" });
+  const posts = await executor.execute(e, executor.delegation(e), { post: async (type, text) => { posted.push({ type, text }); return { status: 201 }; },
+    claudeBin: "unused", childEnv: process.env, check: async () => Object.assign({}, TASK, { name: "Mask test" }),
+    update: async () => ({ ok: true, fields_written: [], comment: "1156860000009601243", issues: [] }),
+    run: async (bin, text, cwd) => {
+      branch = g(cwd, "rev-parse", "--abbrev-ref", "HEAD");
+      fs.writeFileSync(path.join(cwd, "m.js"), "1\n"); g(cwd, "add", "m.js"); g(cwd, "commit", "-qm", "mask");
+      return { ok: true, text: "Done in " + cwd + " for task " + LUHN_TASK + ".\nSTATUS: COMPLETE" };
+    } }).then(() => posted.splice(0));
+  assert.strictEqual(branch, "chatgpt/" + LUHN_TASK + "-mask-test");
+  assert.match(g(path.join(TMP, "origin.git"), "branch", "--list", branch), new RegExp(LUHN_TASK));   // pushed under the real name
+  for (const p of posts) for (const id of [LUHN_TASK, LUHN_PROJECT, "1156860000009601243"]) assert.ok(!p.text.includes(id), p.type + " leaks " + id);
+  assert.match(posts[0].text, /id…611011/);
+  assert.match(posts.at(-1).text, /pushed to origin: yes, remote head matches/);
+  assert.match(posts.at(-1).text, /STATUS: COMPLETE$/);
+});
+
+test("a card number in a run's report is NOT masked, so the relay's filter still refuses it", async () => {
+  const card = "4111111111111111";
+  const e = env({ project_id: LUHN_PROJECT, task_id: LUHN_TASK });
+  const posts = await exec(e, async () => ({ ok: true, text: "Found " + card + ".\nSTATUS: COMPLETE" }));
+  assert.ok(posts.at(-1).text.includes(card));
+});
