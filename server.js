@@ -364,10 +364,20 @@ async function ocPoll(hinted) {
     const r = await cliq("GET", "/chats/" + encodeURIComponent(OC[a]) + "/messages?limit=30");
     if (r.status !== 200 && r.status !== 204) { audit("oc_read_failed", { agent: a, status: r.status }); return; }
     for (const m of r.json.data || []) {
-      const text = m.content && typeof m.content.text === "string" ? m.content.text : "";
+      // A file or image from Damian cannot travel on the bus (text only). It used to be dropped silently (25 Oct images to Mary-Alice):
+      // now the relay says so in the channel and passes any caption on with a note (acceptance #11, 27 Oct).
+      const file = m.type === "file" || !!(m.content && m.content.file);
+      const caption = m.content && typeof m.content.comment === "string" ? m.content.comment : "";
+      const fileName = file && m.content && m.content.file && m.content.file.name ? String(m.content.file.name).slice(0, 80) : "a file";
+      let text = m.content && typeof m.content.text === "string" ? m.content.text : "";
+      if (file) text = "[Damian attached " + fileName + "; the bus cannot carry files, so the agent has not seen it]" + (caption.trim() ? " " + caption : "");
       const msg = { id: m.id, time: Number(m.time) || 0, sender_id: (m.sender && m.sender.id !== undefined) ? String(m.sender.id) : "", text, envelope: null };
       if (st.seen.has(msg.id)) continue;
       st.seen.add(msg.id);
+      if (file && msg.time > STARTED_AT && fromDamian(msg)) {
+        audit("oc_attachment_not_delivered", { agent: a, message_id: msg.id });
+        ocPost(OC[a], "[relay] " + a + " cannot see " + fileName + ": the agent bus carries text only. Describe it in text, or save it to WorkDrive and send the link.").catch(() => {});
+      }
       if (msg.time <= STARTED_AT || !fromDamian(msg) || !text.trim()) continue;   // only Damian's own words, typed after start-up
       if (ocIsRelayPost(a, OC[a], text, msg.id)) continue;                       // never the relay's own posts (agent replies, alerts)
       st.inbox.push({ id: msg.id, time: msg.time, channel_chat: OC[a], text: text.slice(0, 4000), from: "damian", damian_verified: true });
