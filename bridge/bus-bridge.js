@@ -70,6 +70,28 @@ const SECRET_SHAPES = [/\b1000\.[0-9a-f]{20,}\.[0-9a-f]{20,}\b/gi, /\b[0-9a-f]{4
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g, /\bBearer\s+[A-Za-z0-9._~+\/-]{24,}/gi,
   /\b(password|passwd|client_secret|refresh_token|api[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9._\/+-]{12,}/gi];
 const blackOut = (text) => SECRET_SHAPES.reduce((t, re) => t.replace(re, (m) => "[BLACKED OUT: " + m.length + " chars]"), text);
+// A long reply is posted as numbered parts instead of being cut off (Damian, 29 Oct). Each part stays within the relay's limits
+// (measured as escaped JSON, since the relay checks the serialized body); breaks fall on a paragraph, line, sentence or word.
+const MAX_PARTS = 8;
+function splitReply(text, limit, measure) {
+  const room = (s) => measure("[part 00/00] " + s) <= limit;
+  if (room(text)) return [text];
+  const parts = [];
+  let rest = text;
+  while (rest && parts.length < MAX_PARTS) {
+    if (room(rest)) { parts.push(rest); rest = ""; break; }
+    let n = Math.min(rest.length, limit);
+    while (n > 1 && !room(rest.slice(0, n))) n -= Math.max(1, Math.ceil(n / 20));
+    const head = rest.slice(0, n);
+    const floor = Math.floor(n * 0.6);
+    const cut = [head.lastIndexOf("\n\n"), head.lastIndexOf("\n"), head.lastIndexOf(". ") + 1, head.lastIndexOf(" ")].find((i) => i >= floor);
+    const at = cut === undefined ? n : cut;
+    parts.push(rest.slice(0, at).trimEnd());
+    rest = rest.slice(at).trimStart();
+  }
+  if (rest) parts[parts.length - 1] = parts[parts.length - 1].slice(0, -60).trimEnd() + "\n[reply longer than " + MAX_PARTS + " parts; the rest was cut]";
+  return parts.map((p, i) => "[part " + (i + 1) + "/" + parts.length + "] " + p);
+}
 function keepWithheld(agent, id, text, detail) {
   try {
     fs.mkdirSync(WITHHELD_DIR, { recursive: true, mode: 0o700 });
@@ -250,13 +272,21 @@ async function handle(agent, key, env) {
       return;
     }
     const type = /STATUS:\s*(COMPLETE|BLOCKED)/i.test(result.text) ? "result" : "ack";
-    let r = await api(key, "POST", "/messages", { to: env.from, type, correlation_id: cid, payload: result.text.slice(0, 3500) });
-    if (r.status === 422) { // the agent did reply, but the relay withheld the content
-      log(agent, "reply for", cid, "withheld by the relay; kept at", keepWithheld(agent, cid, result.text, r.json.detail));
-      r = await api(key, "POST", "/messages", { to: env.from, type: "ack", correlation_id: cid, payload: "Received. My full reply was withheld by the relay: " + String(r.json.detail || "sensitive content") });
+    const parts = splitReply(result.text, 3450, (s) => JSON.stringify(s).length);
+    let posted = 0, kept = false;
+    for (let i = 0; i < parts.length; i++) {
+      const which = parts.length > 1 ? "Part " + (i + 1) + " of " + parts.length + " of my reply" : "My full reply";
+      let r = await api(key, "POST", "/messages", { to: env.from, type, correlation_id: cid, payload: parts[i] });
+      if (r.status === 422) { // the agent did reply, but the relay withheld the content
+        if (!kept) { kept = true; log(agent, "reply for", cid, "withheld by the relay; kept at", keepWithheld(agent, cid, result.text, r.json.detail)); }
+        r = await api(key, "POST", "/messages", { to: env.from, type: "ack", correlation_id: cid, payload: "Received. " + which + " was withheld by the relay: " + String(r.json.detail || "sensitive content") });
+      }
+      if (r.status === 201) posted++;
+      else log(agent, "could not post", which.toLowerCase(), "for", cid, "HTTP", r.status, JSON.stringify(r.json).slice(0, 160));
+      if (i < parts.length - 1) await sleep(500);
     }
-    if (r.status === 201) { done.add(k); save(); log(agent, type === "result" ? "answered" : "acknowledged", cid); }
-    else log(agent, "could not post its reply for", cid, "HTTP", r.status, JSON.stringify(r.json).slice(0, 160));
+    // Once any part is on the bus the request is acknowledged, so it is not re-run; a missing part is in the log.
+    if (posted) { done.add(k); save(); log(agent, type === "result" ? "answered" : "acknowledged", cid, parts.length > 1 ? "in " + posted + "/" + parts.length + " parts" : ""); }
   } finally { busy.delete(k); }
 }
 
@@ -295,8 +325,15 @@ async function handleChannel(agent, key, m) {
       return;
     }
     if (/^\s*NO_REPLY\s*$/.test(result.text)) { done.add(k); save(); log(agent, "chose not to reply to", m.id); return; }   // OpenClaw's "nothing to say": post nothing
-    const r = await api(key, "POST", "/channel", { text: result.text.slice(0, 3400), in_reply_to: m.id });
-    if (r.status === 201) { done.add(k); save(); log(agent, "replied in its channel", r.json.message_id); }
+    const parts = splitReply(result.text, 3400, (s) => s.length);
+    let r;
+    for (let i = 0; i < parts.length; i++) {
+      r = await api(key, "POST", "/channel", { text: parts[i], in_reply_to: m.id });
+      if (r.status !== 201) break;
+      log(agent, "replied in its channel", r.json.message_id, parts.length > 1 ? "(part " + (i + 1) + "/" + parts.length + ")" : "");
+      if (i < parts.length - 1) await sleep(500);
+    }
+    if (r.status === 201) { done.add(k); save(); }
     else {
       log(agent, "could not post its channel reply, HTTP", r.status, JSON.stringify(r.json).slice(0, 160));
       if (r.status === 422) log(agent, "channel reply for", m.id, "withheld by the relay; kept at", keepWithheld(agent, m.id, result.text, r.json.detail));
