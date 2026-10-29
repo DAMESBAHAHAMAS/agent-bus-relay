@@ -58,10 +58,17 @@ fetch(base + "/messages", { method: "POST", headers: { Authorization: "Bearer " 
         await new Promise((ok) => setTimeout(ok, 2000));
         const st = await get("/status?correlation_id=" + encodeURIComponent(cid));
         if (st.state === "acknowledged") {
-          const inbox = await get("/messages?for_me=1&since=" + (t0 - 5000));
-          const reply = (inbox.messages || []).filter((m) => m.envelope && m.envelope.correlation_id === cid && m.envelope.from === st.acknowledged_by).pop();
+          // A long reply arrives as "[part i/n]" messages: keep reading (up to 30 s more) until all n are in, then print them in order.
+          const text = (m) => (typeof m.envelope.payload === "string" ? m.envelope.payload : JSON.stringify(m.envelope.payload));
+          let replies = [];
+          for (const until = Date.now() + 30000; ; await new Promise((ok) => setTimeout(ok, 2000))) {
+            const inbox = await get("/messages?for_me=1&since=" + (t0 - 5000));
+            replies = (inbox.messages || []).filter((m) => m.envelope && m.envelope.correlation_id === cid && m.envelope.from === st.acknowledged_by);
+            const total = Math.max(0, ...replies.map((m) => Number((/^\[part \d+\/(\d+)\]/.exec(text(m)) || [])[1] || 0)));
+            if (!total || replies.length >= total || Date.now() > until) break;
+          }
           console.log("ACKNOWLEDGED by " + st.acknowledged_by + " after " + st.waiting_seconds + " seconds. Its reply:");
-          console.log(reply ? (typeof reply.envelope.payload === "string" ? reply.envelope.payload : JSON.stringify(reply.envelope.payload)) : "(reply text not found; see #agent-bus)");
+          console.log(replies.length ? replies.map(text).join("\n") : "(reply text not found; see #agent-bus)");
           return;
         }
       }
