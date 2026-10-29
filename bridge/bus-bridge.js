@@ -368,8 +368,14 @@ async function loop(agent) {
         const all = await api(key, "GET", "/messages?for_me=1&since=0");
         for (const m of all.json.messages || []) if (m.envelope && m.envelope.type === "request" && waiting.some((p) => p.correlation_id === m.envelope.correlation_id)) todo.set(m.envelope.correlation_id, m.envelope);
       }
-      for (const env of todo.values()) handle(agent, key, env); // keep listening while an agent thinks
-      for (const m of r.json.channel_messages || []) { since = Math.max(since, m.time); handleChannel(agent, key, m); }
+      // Not awaited, so the agent keeps listening while it thinks. A failure inside (the relay restarting, a timeout) is logged here;
+      // uncaught, it would end the whole bridge and leave every agent deaf until launchd restarts it (29 Oct). The job stays not-done,
+      // so the next poll retries it within MAX_ATTEMPTS.
+      for (const env of todo.values()) handle(agent, key, env).catch((e) => log(agent, "request", env.correlation_id, "failed:", String(e && e.message || e).slice(0, 200)));
+      for (const m of r.json.channel_messages || []) {
+        since = Math.max(since, m.time);
+        handleChannel(agent, key, m).catch((e) => log(agent, "channel message", m.id, "failed:", String(e && e.message || e).slice(0, 200)));
+      }
       state.since[agent] = since; save();
       if (!(r.json.messages || []).length) await sleep(250);
     } catch (e) { await sleep(5000); }
@@ -378,6 +384,8 @@ async function loop(agent) {
 
 const mine = (process.env.BUS_AGENTS ? process.env.BUS_AGENTS.split(",") : Object.keys(KINDS)).map((s) => s.trim()).filter((a) => KINDS[a]);
 log("bus-bridge v3 starting for", mine.join(", "), "->", BASE);
+// Last line of defence: a stray rejected promise is logged instead of ending the process for all agents.
+process.on("unhandledRejection", (e) => log("unhandled rejection (bridge kept running):", String(e && e.stack || e).slice(0, 400)));
 for (const a of mine) loop(a);
 
 
