@@ -61,6 +61,23 @@ try { state = Object.assign(state, JSON.parse(fs.readFileSync(STATE_FILE, "utf8"
 const done = new Set(state.done);
 const busy = new Set();
 const attempts = new Map();
+// A reply the relay withholds (HTTP 422) is kept on this Mac only, owner-readable, so it can be inspected and resent safely (29 Oct).
+// The relay's filter is unchanged; nothing withheld leaves the Mac. Anything shaped like a secret (the relay's own patterns, server.js)
+// is blacked out before saving, so a correctly withheld secret is never written to disk; the length shows what tripped the filter.
+const WITHHELD_DIR = path.join(AGENT_HOME, "withheld");
+const SECRET_SHAPES = [/\b1000\.[0-9a-f]{20,}\.[0-9a-f]{20,}\b/gi, /\b[0-9a-f]{40,}\b/gi, /\bsk-[A-Za-z0-9_-]{20,}/g,
+  /\b(rnd|ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{20,}/g, /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, /\bAKIA[0-9A-Z]{16}\b/g,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g, /\bBearer\s+[A-Za-z0-9._~+\/-]{24,}/gi,
+  /\b(password|passwd|client_secret|refresh_token|api[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9._\/+-]{12,}/gi];
+const blackOut = (text) => SECRET_SHAPES.reduce((t, re) => t.replace(re, (m) => "[BLACKED OUT: " + m.length + " chars]"), text);
+function keepWithheld(agent, id, text, detail) {
+  try {
+    fs.mkdirSync(WITHHELD_DIR, { recursive: true, mode: 0o700 });
+    const f = path.join(WITHHELD_DIR, new Date().toISOString().replace(/[:.]/g, "-") + "-" + agent + "-" + String(id).replace(/[^\w-]/g, "_").slice(0, 60) + ".txt");
+    fs.writeFileSync(f, "relay detail: " + (detail || "?") + "\n\n" + blackOut(text), { mode: 0o600 });
+    return f;
+  } catch (e) { return "(could not save: " + e.message + ")"; }
+}
 function save() { state.done = [...done].slice(-500); try { fs.writeFileSync(STATE_FILE, JSON.stringify(state), { mode: 0o600 }); } catch (e) {} }
 
 // ---------- the frame every bus message is delivered in ----------
@@ -224,6 +241,7 @@ async function handle(agent, key, env) {
     const type = /STATUS:\s*(COMPLETE|BLOCKED)/i.test(result.text) ? "result" : "ack";
     let r = await api(key, "POST", "/messages", { to: env.from, type, correlation_id: cid, payload: result.text.slice(0, 3500) });
     if (r.status === 422) { // the agent did reply, but the relay withheld the content
+      log(agent, "reply for", cid, "withheld by the relay; kept at", keepWithheld(agent, cid, result.text, r.json.detail));
       r = await api(key, "POST", "/messages", { to: env.from, type: "ack", correlation_id: cid, payload: "Received. My full reply was withheld by the relay: " + String(r.json.detail || "sensitive content") });
     }
     if (r.status === 201) { done.add(k); save(); log(agent, type === "result" ? "answered" : "acknowledged", cid); }
@@ -270,6 +288,7 @@ async function handleChannel(agent, key, m) {
     if (r.status === 201) { done.add(k); save(); log(agent, "replied in its channel", r.json.message_id); }
     else {
       log(agent, "could not post its channel reply, HTTP", r.status, JSON.stringify(r.json).slice(0, 160));
+      if (r.status === 422) log(agent, "channel reply for", m.id, "withheld by the relay; kept at", keepWithheld(agent, m.id, result.text, r.json.detail));
       // The agent did answer but the relay refused the post (e.g. withheld content): still tell Damian.
       const n = await api(key, "POST", "/channel", { text: "Received and answered, but the reply could not be posted here (HTTP " + r.status + (r.json && r.json.detail ? ": " + String(r.json.detail).slice(0, 120) : "") + "). (Notice from the Mac bridge, not from " + agent + ".)", in_reply_to: m.id }).catch(() => null);
       if (n && n.status === 201) { done.add(k); save(); log(agent, "posted a reply-withheld notice for", m.id); }
