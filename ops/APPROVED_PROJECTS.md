@@ -15,3 +15,18 @@ Damian adds and closes projects here. Sessions act within each scope under CLAUD
 - Scope: `welcomeiq/` in this repo; the coval-welcomeiq OpenClaw agent and its Slack channel (#welcomeiq-coval-testing); Coval runs on "My agent" (no cost limit); branches and pull requests on damianknowles/omnichannel-voice-intake (never merge to `feature/streaming-pipeline` or deploy without Arsalan or Damian).
 - Out of scope: Mary-Alice, HumanIQ/Muse, other OpenClaw agents.
 - Record: welcomeiq/HANDOFF-claude-2026-10-18.md.
+
+## Executive AI Operations Dashboard
+- Approved: Damian, 2026-10-29 (authorized in his session with Claude Code; in force when Damian merges this entry). Owner: the Claude Code session building the dashboard; Systems & Automation for agent instrumentation; Business Operations validates task ids.
+- Spec: the five capabilities Damian set on 29 Oct (agent monitoring; projects and tasks; exceptions and alerts; execution evidence; decisions and approvals), run by management by exception. Build plan: Claude doc "Executive AI Operations Dashboard — Build Plan" (https://claude.ai/artifact/UCA7vNoWnNMgfvMko1NtSn). Design: the mockup Damian approved on 28 Oct (Design canvas "Executive AI Operations Dashboard"). Decisions of 28 Oct apply: custom dashboard, the existing Render backend, a Supabase reporting cache, LangSmith tracing with the Zoho Projects task id as trace metadata, Zoho Projects the sole authority for task status, daily spend budget unlimited.
+- Goal: a working read-only MVP of all five capabilities within 48 hours, then the phases in the build plan, each closed by its gate test with evidence ids.
+- In scope:
+  - the dashboard web app built from the approved mockup, behind authentication, for Damian only;
+  - read-only collection on the existing Render backend from the bridge log, the relay ledger, status and audit (agent keys read by reference), Claude CLI run output, LangSmith traces, Zoho Projects and the Notion decision register;
+  - a Supabase reporting cache: create its tables and write run, task and exception rows;
+  - per-run records and LangSmith tracing with `zoho_task_id` and `thread_id` in the bridge, through reviewed pull requests in this repo; secret-shaped text blacked out; prompt and reply bodies not stored;
+  - Cliq alerts to oc-alerts (bridge crash, withheld reply, request unacknowledged over 30 minutes, stalled task);
+  - branches, pull requests, merges to main, deploys of these changes, bridge restarts they need, and their tests.
+- Out of scope (escalate to Damian first): any write to Zoho Projects, the decision register or Cliq beyond oc-alerts; approve and reject actions (capability 5 stays view-only until Damian approves the write phase, and any approval it sends must be Damian's own Cliq message under R-0117 / ADR-212); creating, rotating or copying any credential, including the LangSmith API key and the Supabase service key; new paid plans; OpenClaw permission changes, including enforcing the own-tools rule; any Personal (DK-154) data; exposing the dashboard without authentication; anything that interrupts video production or the Finance Plaid backfill.
+- Rules: agents never assign a task id; Business Operations validates it in Zoho Projects (exists, right project, agent authorized) before dispatch, and an invalid id blocks dispatch and raises an exception.
+- Record: evidence for each phase gate under ops/ (pull request, deploy and test run ids).
