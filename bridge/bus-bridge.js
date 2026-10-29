@@ -162,16 +162,27 @@ async function wakeClaude(agent, prompt, env) {
   const role = ROLES[agent];
   const md = path.join(dir, "CLAUDE.md");
   if (role && !fs.existsSync(md)) fs.writeFileSync(md, "# " + role + " (" + agent + ")\n\nYou are Damian Knowles's " + role + " function on his agent bus.\nPaste this function's project instructions below to give it the same knowledge as the Claude project.\n");
+  // Damian, 29 Oct 2026: bus-woken function agents may read their own instruction and knowledge folder only; no credentials, no
+  // changes. Read/Glob/Grep inside the agent's folder, everything else denied (dontAsk), no MCP. Only for his own agents and his
+  // Cliq channel (no sender_class); outside senders still get the tool-less reply.
+  const ownFolder = Boolean(role) && (!env || !env.sender_class || env.sender_class === "internal");
   const system = role
-    ? "You are " + role + " (bus name " + agent + "), one of Damian Knowles's Claude business functions, answering on his agent bus. You have no tools in this mode. Answer from the message and your instructions, and say plainly when you cannot verify something."
+    ? "You are " + role + " (bus name " + agent + "), one of Damian Knowles's Claude business functions, answering on his agent bus. " +
+      (ownFolder ? "You can read only your own folder (CLAUDE.md, INDEX.md, knowledge/) with Read, Glob and Grep; you cannot change anything or reach anything else. "
+                 : "You have no tools in this mode. ") +
+      "Answer from the message and your instructions, and say plainly when you cannot verify something."
     : "You are Claude Code, answering on Damian Knowles's agent bus. You have no tools in this mode. Answer from the message alone, and say plainly when you cannot verify something.";
+  const tools = ownFolder
+    ? ["--tools", "Read,Glob,Grep", "--permission-mode", "dontAsk", "--allowedTools", "Read(./**)",
+       "--disallowedTools", "Read(./**/.env*)", "Read(./**/*.key)", "Read(./**/*.pem)", "Read(./**/*.p12)", "Read(./**/*credential*)", "Read(./**/*secret*)", "Read(./**/*token*)"]
+    : ["--tools", ""];
   // Damian, 28 Oct 2026: "Every agent needs tools. Give it full tools." claude-code woken by his own agents or by GPT/ChatGPT
   // runs as a full Claude Code in ~/Developer; any other outside sender still gets the tool-less reply.
   const fullTools = agent === "claude-code" && Boolean(env) && (env.sender_class === "internal" || FULL_TOOL_SENDERS.has(env.from));
   const r = fullTools
     ? await run(CLAUDE, ["-p", prompt, "--model", CLAUDE_MODEL, "--output-format", "json", "--permission-mode", "bypassPermissions", "--no-session-persistence",
         "--append-system-prompt", FULL_TOOLS_SYSTEM], { cwd: path.join(HOME, "Developer"), timeout: (FULL_TOOLS_TIMEOUT_S + 30) * 1000 })
-    : await run(CLAUDE, ["-p", prompt, "--model", CLAUDE_MODEL, "--output-format", "json", "--tools", "", "--strict-mcp-config", "--no-session-persistence",
+    : await run(CLAUDE, ["-p", prompt, "--model", CLAUDE_MODEL, "--output-format", "json", ...tools, "--strict-mcp-config", "--no-session-persistence",
         "--append-system-prompt", system], { cwd: dir });
   try {
     const j = JSON.parse(r.stdout.slice(r.stdout.indexOf("{")));
