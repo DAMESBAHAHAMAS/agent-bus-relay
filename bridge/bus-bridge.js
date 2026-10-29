@@ -62,13 +62,19 @@ const done = new Set(state.done);
 const busy = new Set();
 const attempts = new Map();
 // A reply the relay withholds (HTTP 422) is kept on this Mac only, owner-readable, so it can be inspected and resent safely (29 Oct).
-// The relay's filter is unchanged; nothing withheld leaves the Mac.
+// The relay's filter is unchanged; nothing withheld leaves the Mac. Anything shaped like a secret (the relay's own patterns, server.js)
+// is blacked out before saving, so a correctly withheld secret is never written to disk; the length shows what tripped the filter.
 const WITHHELD_DIR = path.join(AGENT_HOME, "withheld");
+const SECRET_SHAPES = [/\b1000\.[0-9a-f]{20,}\.[0-9a-f]{20,}\b/gi, /\b[0-9a-f]{40,}\b/gi, /\bsk-[A-Za-z0-9_-]{20,}/g,
+  /\b(rnd|ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{20,}/g, /\bxox[abprs]-[A-Za-z0-9-]{10,}/g, /\bAKIA[0-9A-Z]{16}\b/g,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(-----END [A-Z ]*PRIVATE KEY-----|$)/g, /\bBearer\s+[A-Za-z0-9._~+\/-]{24,}/gi,
+  /\b(password|passwd|client_secret|refresh_token|api[_-]?key)\s*[:=]\s*["']?[A-Za-z0-9._\/+-]{12,}/gi];
+const blackOut = (text) => SECRET_SHAPES.reduce((t, re) => t.replace(re, (m) => "[BLACKED OUT: " + m.length + " chars]"), text);
 function keepWithheld(agent, id, text, detail) {
   try {
     fs.mkdirSync(WITHHELD_DIR, { recursive: true, mode: 0o700 });
     const f = path.join(WITHHELD_DIR, new Date().toISOString().replace(/[:.]/g, "-") + "-" + agent + "-" + String(id).replace(/[^\w-]/g, "_").slice(0, 60) + ".txt");
-    fs.writeFileSync(f, "relay detail: " + (detail || "?") + "\n\n" + text, { mode: 0o600 });
+    fs.writeFileSync(f, "relay detail: " + (detail || "?") + "\n\n" + blackOut(text), { mode: 0o600 });
     return f;
   } catch (e) { return "(could not save: " + e.message + ")"; }
 }
