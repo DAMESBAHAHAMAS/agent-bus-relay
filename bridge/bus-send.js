@@ -65,7 +65,8 @@ fetch(base + "/messages", { method: "POST", headers: { Authorization: "Bearer " 
             const inbox = await get("/messages?for_me=1&since=" + (t0 - 5000));
             replies = (inbox.messages || []).filter((m) => m.envelope && m.envelope.correlation_id === cid && m.envelope.from === st.acknowledged_by);
             const total = Math.max(0, ...replies.map((m) => Number((/^\[part \d+\/(\d+)\]/.exec(text(m)) || [])[1] || 0)));
-            if (!total || replies.length >= total || Date.now() > until) break;
+            // Keep reading while no reply has shown up yet (the inbox can lag the acknowledgment) or parts are still missing.
+            if (Date.now() > until || (replies.length && (!total || replies.length >= total))) break;
           }
           console.log("ACKNOWLEDGED by " + st.acknowledged_by + " after " + st.waiting_seconds + " seconds. Its reply:");
           console.log(replies.length ? replies.map(text).join("\n") : "(reply text not found; see #agent-bus)");
