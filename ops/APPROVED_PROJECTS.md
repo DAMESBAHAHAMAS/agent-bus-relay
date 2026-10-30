@@ -16,6 +16,12 @@ Damian adds and closes projects here. Sessions act within each scope under CLAUD
 - Out of scope: Mary-Alice, HumanIQ/Muse, other OpenClaw agents.
 - Record: welcomeiq/HANDOFF-claude-2026-10-18.md.
 
+## Finance Autonomy
+- Approved: Damian, 2026-10-19. Trigger: Finance Desktop's Phase 1 requirements, delivered to claude-code and Systems & Automation over the bus or Cliq.
+- In scope: implement, configure, test and correct every listed capability for OpenClaw Finance (`finance`) in Zoho Books, Tables, WorkDrive, Projects and Cliq, until it runs the Aug 12, 2026-present reconciliation and the 4:00 AM and 4:00 PM close reports on its own, proven by real operations. Acknowledge on the bus; Damian does not relay messages.
+- Out of scope: Zoho Mail, Zoho Flow, the mail filters, deletions, new expenses.
+- Record: until 2026-10-30 this entry existed only as an uncommitted edit on the Mac; Damian reaffirmed it ("Finance Autonomy is still approved, add it back") and it was committed that day.
+
 ## Executive AI Operations Dashboard
 - Approved: Damian, 2026-10-29 (authorized in his session with Claude Code; in force when Damian merges this entry). Owner: the Claude Code session building the dashboard; Systems & Automation for agent instrumentation; Business Operations validates task ids.
 - Spec: the five capabilities Damian set on 29 Oct (agent monitoring; projects and tasks; exceptions and alerts; execution evidence; decisions and approvals), run by management by exception. Build plan: Claude doc "Executive AI Operations Dashboard — Build Plan" (https://claude.ai/artifact/UCA7vNoWnNMgfvMko1NtSn). Design: the mockup Damian approved on 28 Oct (Design canvas "Executive AI Operations Dashboard"). Decisions of 28 Oct apply: custom dashboard, the existing Render backend, a Supabase reporting cache, LangSmith tracing with the Zoho Projects task id as trace metadata, Zoho Projects the sole authority for task status, daily spend budget unlimited.
