@@ -162,7 +162,7 @@ async function wakeOpenClaw(agent, prompt, env) {
     const meta = (j.result && j.result.meta) || {};
     const payloads = (j.result && j.result.payloads) || [];
     const text = meta.finalAssistantVisibleText || (payloads[0] && payloads[0].text) || "";
-    return { ok: j.status === "ok" && Boolean(text), text, status: j.status };
+    return { ok: j.status === "ok" && Boolean(text), text, status: j.status, usage: openClawUsage(j, meta) };
   } catch (e) { return { ok: false, text: "", status: r.err ? "run_failed" : "unreadable_output" }; }
 }
 // Read-only context for a tool-less Claude agent: context-sources.json in its folder lists files to copy in before each wake,
@@ -209,7 +209,7 @@ async function wakeClaude(agent, prompt, env) {
   try {
     const j = JSON.parse(r.stdout.slice(r.stdout.indexOf("{")));
     const text = typeof j.result === "string" ? j.result : "";
-    return { ok: !j.is_error && Boolean(text), text, status: j.subtype || (j.is_error ? "error" : "ok") };
+    return { ok: !j.is_error && Boolean(text), text, status: j.subtype || (j.is_error ? "error" : "ok"), usage: claudeUsage(j) };
   } catch (e) { return { ok: false, text: "", status: r.err ? "run_failed" : "unreadable_output" }; }
 }
 let spmKey = "";
@@ -231,6 +231,30 @@ async function wakeZia(agent, prompt) {
   } catch (e) { return { ok: false, text: "", status: "unreachable: " + String(e.message || e).slice(0, 100) }; }
 }
 const WAKE = { openclaw: wakeOpenClaw, claude: wakeClaude, zia: wakeZia };
+
+// ---------- per-run usage for the Executive Operations Dashboard (numbers and model name only; never prompt or reply text) ----------
+const num = (v) => (typeof v === "number" && isFinite(v) ? v : null);
+function claudeUsage(j) {
+  const u = j.usage || {};
+  const input = [u.input_tokens, u.cache_creation_input_tokens, u.cache_read_input_tokens].map(num).filter((v) => v !== null);
+  return { cost_usd: num(j.total_cost_usd), input_tokens: input.length ? input.reduce((a, b) => a + b, 0) : null, output_tokens: num(u.output_tokens),
+    model: Object.keys(j.modelUsage || {})[0] || CLAUDE_MODEL || null, turns: num(j.num_turns), duration_ms: num(j.duration_ms) };
+}
+// OpenClaw's JSON shape for usage is not documented here, so look in the likely places and report field names once if nothing matches.
+let openClawShapeLogged = false;
+function openClawUsage(j, meta) {
+  const cands = [meta.usage, meta.agentMeta && meta.agentMeta.usage, j.result && j.result.usage, j.usage].filter((x) => x && typeof x === "object");
+  const u = cands[0] || {};
+  const pick = (...ks) => { for (const k of ks) if (num(u[k]) !== null) return u[k]; return null; };
+  const out = { cost_usd: pick("cost", "costUsd", "cost_usd", "total_cost_usd"), input_tokens: pick("input", "inputTokens", "input_tokens", "prompt_tokens"),
+    output_tokens: pick("output", "outputTokens", "output_tokens", "completion_tokens"), model: (meta.agentMeta && meta.agentMeta.model) || meta.model || null, turns: null, duration_ms: num(meta.durationMs) };
+  if (!cands.length && !openClawShapeLogged) { openClawShapeLogged = true; log("openclaw output has no usage block; meta keys:", Object.keys(meta).join(",").slice(0, 300)); }
+  return out;
+}
+// One line per wake attempt; the dashboard collector reads it. id is the correlation id (bus) or the Cliq message id (channel).
+function logUsage(agent, id, result) {
+  if (result && result.usage) log(agent, "usage", id, JSON.stringify(result.usage));
+}
 
 async function api(key, method, pathAndQuery, body, timeoutMs) {
   const r = await fetch(BASE + pathAndQuery, { method, headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
@@ -262,6 +286,7 @@ async function handle(agent, key, env) {
       return;
     }
     const result = await WAKE[KINDS[agent]](agent, frame(agent, env), env);
+    logUsage(agent, cid, result);
     if (!result.ok) {
       log(agent, "produced no reply for", cid, "(" + result.status + "). No acknowledgment sent.");
       // After the last attempt, say so on the bus. This is an alert, never an acknowledgment, so the request stays open.
@@ -309,7 +334,8 @@ async function handleChannel(agent, key, m) {
     const until = Date.now() + 600000;
     let result;
     for (let n = 1; ; n++) {
-      result = await WAKE[KINDS[agent]](agent, prompt, { session: "cliq-channel-v2" });   // v2 (19 Oct): the v1 sessions were archived to start fresh; OpenClaw refuses new work on an archived key
+      result = await WAKE[KINDS[agent]](agent, prompt, { session: "cliq-channel-v2" });
+      logUsage(agent, m.id, result);   // v2 (19 Oct): the v1 sessions were archived to start fresh; OpenClaw refuses new work on an archived key
       const wait = n <= 3 ? 5000 : 20000;   // quick retries first: most failures clear within seconds
       if (result.ok || Date.now() + wait > until) break;
       log(agent, "wake", n, "failed for", m.id, "(" + result.status + "); retrying in " + wait / 1000 + " s");
