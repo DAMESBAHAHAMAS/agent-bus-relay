@@ -31,3 +31,9 @@ The 48-hour clock starts when the merge AND all required infrastructure access a
 - Hosting: a free Render Static Site (no server, no sleep), deployed from the new repo, so the production bus is never redeployed or restarted for the dashboard. Data is written by a Mac collector to Supabase with the service key held in Keychain (`exec-dashboard-supabase-service`).
 - Supabase free tier allows 2 active projects; this project and llc-filing-intake are the 2. Restoring a paused project (truefare, omnichannel-voice-intake) would hit that limit.
 - Nine Command View panels, read-only; approve, decline and "Send via Cliq" are not built in phase 1.
+
+## Parked 2026-10-30 ~04:50Z (Damian: this session now works only on assignment accountability)
+- Cost tracking: PR #12 merged (1923c25). Pending on the Mac: stash ops/APPROVED_PROJECTS.md (now on main as 1a292cf, PR #13), pull, restart com.damianknowles.agent-bus-bridge; then confirm runs.cost_usd fills after the next agent run. The local Mac session has the exact steps.
+- Decision register live sync: not started (193 rows are the 29 Oct snapshot).
+- Supabase: turn off "Allow new users to sign up" (Damian, one click).
+- Real milestone dates need a milestones read scope on the agents' Zoho client (credential change; Damian decides).
