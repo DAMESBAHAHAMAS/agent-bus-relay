@@ -2,11 +2,11 @@
 
 The 48-hour clock starts when the merge AND all required infrastructure access are verified (Damian, 29 Oct 2026).
 
-## Status: CLOCK RUNNING
+## Status: CLOCK RUNNING — MVP live, signed in by Damian 2026-10-30
 
 - **Start:** 2026-10-29T17:55:31Z (13:55 ET), at the first verified push to the new repo (`ba339cf` on main).
 - **Deadline:** 2026-10-31T17:55:31Z (13:55 ET, Friday 31 Oct).
-- **Blockers:** 1 open (B2 below), an owner step. It does not stop the clock.
+- **Blockers:** none open.
 
 | Item | Status | Evidence |
 |---|---|---|
@@ -20,10 +20,12 @@ The 48-hour clock starts when the merge AND all required infrastructure access a
 | Render Static Site | Done | Created by Damian in the dashboard 2026-10-29T18:40:51Z: srv-dbhp6cg473hc73ail260, https://executive-operations-dashboard-29wr.onrender.com, build `echo static`, publish `web`, branch main, auto-deploy on commit. Deploy dep-dbhp6co473hc73ail2t0 live 18:41:06Z on 3037cc1 |
 | Render | Checked, nothing changed | Workspace "Damian's workspace" (tea-d6iool450q8c73ba8rag), 9 services. No existing dashboard backend; agent-bus-relay (srv-db72dfs9v7es73a8gh5g) is the production bus and is left alone |
 
-## Open blockers
+## Blockers and incidents
 - ~~B1~~ cleared 18:40Z: Render can deploy the repo.
 - ~~B3~~ cleared 18:52Z: secret key `collector` stored in Keychain; collector syncing.
-- **B2 (Damian):** Supabase Auth URL Configuration must use the real URL `https://executive-operations-dashboard-29wr.onrender.com` (Render added the -29wr suffix) for Site URL and Redirect URLs.
+- ~~B2~~ cleared 2026-10-30 ~04:09Z: Supabase Auth Site URL and Redirect URL set to the -29wr address; Damian signed in and saw live data.
+- Sign-in email: Supabase's built-in mailer delivered one link (19:01Z), then a second (19:09Z) that never reached Damian's inbox, after which it refused the address as `email_address_invalid` (02:48Z, 04:01Z). Fixed by custom SMTP through Damian's own Zoho Mail (smtppro.zoho.com:465, sender damian@damianknowles.com), set by Damian in the Supabase dashboard.
+- Collector stall: the long-running collector process failed every cycle with `fetch failed` from 19:15Z to 04:13Z while a fresh process on the same Mac reached Supabase and the relay. Fix 9bdc6a7: log the network cause, exit after 5 failed cycles so launchd restarts it; dashboard now raises a "collector not reporting" exception and marks agents stale after 15 min. Restarted 04:14:31Z: `synced 15 agents`.
 
 ## Plan once unblocked (no new approvals needed; technical notes)
 - Hosting: a free Render Static Site (no server, no sleep), deployed from the new repo, so the production bus is never redeployed or restarted for the dashboard. Data is written by a Mac collector to Supabase with the service key held in Keychain (`exec-dashboard-supabase-service`).
