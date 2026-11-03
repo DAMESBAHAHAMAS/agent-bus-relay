@@ -1,0 +1,50 @@
+{
+ "project": "1156860000009157037",
+ "task": "1156860000009641088",
+ "acceptance_sha256": "c90bbbdccbbac464b2971c3efb0e2a52e8a522d526090bdc57ee2413475e5d3f",
+ "author": "Claude Code (Business Operations accountable), 3 Nov 2026; statute independently read at leg.state.fl.us 06:2x UTC",
+ "checks": [
+  {
+   "criterion": "Task is CA1-T32",
+   "operation": "project_task",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009641088"
+   },
+   "path": [
+    "prefix"
+   ],
+   "equals": "CA1-T32"
+  },
+  {
+   "criterion": "Marked verified or unverified",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009641088"
+   },
+   "path": [],
+   "contains": "RESULT: VERIFIED"
+  },
+  {
+   "criterion": "Current official text referenced (source link)",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009641088"
+   },
+   "path": [],
+   "contains": "leg.state.fl.us/statutes/index.cfm?App_mode=Display_Statute"
+  },
+  {
+   "criterion": "Text referenced: subsection (1)(a) LLC designator",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009641088"
+   },
+   "path": [],
+   "contains": "(1)(a) name must contain"
+  }
+ ]
+}

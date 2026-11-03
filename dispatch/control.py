@@ -8,6 +8,12 @@ HELPER = HOME/'.openclaw/extensions/business-functions-direct'
 sys.path.insert(0, str(HELPER))
 FUNCTIONS = {'Business Operations':'bizops','Systems and Automation':'systems','Compliance and Filings':'compliance','Sales and Marketing':'salesmkt','Code Development':'codedev'}
 INTERNAL = {'bizops','systems','finance','salesmkt','compliance','codedev'}
+# Zoho "Execution Actor" custom field -> existing business executor (BO2-T82: Damian owns, the actor executes).
+ACTORS = {'Biz Operations':'bizops','SysAuto':'systems','SalesM':'salesmkt','Compliance':'compliance','Finance':'finance','Code Dev':'codedev','CodeDev':'codedev'}
+HUMAN_ACTORS = {'damian','arsalan'}
+def truthy(v): return v is True or str(v).strip().lower() in ('true','1','yes')
+# Damian's approved baseline (2 Nov 2026): a High-priority task ticked Vetted is approved for dispatch within existing authority.
+def baseline(t): return truthy(t.get('vetted')) and str(t.get('priority') or '').lower()=='high'
 TEST_PROJECT = '1156860000009158003'
 TEST_TASK = '1156860000009398021'
 def now(): return dt.datetime.now(dt.timezone.utc).isoformat()
@@ -27,22 +33,29 @@ def owner(project, task):
  f = field(task.get('description'), 'FUNCTION').split('|')[0].strip().lower()
  aliases = {'business operations':'bizops','systems and automation':'systems','systems & automation':'systems','finance':'finance','sales & marketing':'salesmkt','sales and marketing':'salesmkt','compliance and filings':'compliance','compliance':'compliance','code development':'codedev'}
  if f in aliases:return aliases[f]
+ a = ACTORS.get(str(task.get('execution_actor') or '').strip())
+ if a:return a
  n = project.get('name','')
  return FUNCTIONS.get(n) or ('finance' if n.startswith('FIN —') else None)
 def requirements(t):
- d=t.get('description','');return {'acceptance':field(d,'DEFINITION OF DONE'),'evidence':field(d,'EVIDENCE REQUIRED'),'dependencies':field(d,'DEPENDENCIES')}
+ d=t.get('description','')
+ return {'acceptance':field(d,'DEFINITION OF DONE') or plain(t.get('definition_of_done') or '').strip(),'evidence':field(d,'EVIDENCE REQUIRED') or plain(t.get('evidence_required') or '').strip(),'dependencies':field(d,'DEPENDENCIES')}
 def readiness(project,t,tasks,approved=False):
  if closed(t):return 'closed'
- if not approved and not (t.get('execution_approved') is True or field(t.get('description'),'DISPATCH APPROVED').lower()=='yes'):return 'approval_not_explicit'
+ if not approved and not (t.get('execution_approved') is True or field(t.get('description'),'DISPATCH APPROVED').lower()=='yes' or baseline(t)):return 'approval_not_explicit'
+ if str(t.get('execution_actor') or '').strip().lower() in HUMAN_ACTORS:return 'human_executor_required'
  if not owner(project,t):return 'function_owner_unclear'
  if re.search(r'(?i)executor:\s*Damian',plain(t.get('description'))):return 'human_executor_required'
  if re.search(r'(?i)\b(delete|rotate credentials|permission expansion|paid plan|publish|send email|pay invoice)\b',plain(t.get('name'))):return 'material_action_requires_existing_specific_authority'
+ # Baseline dispatch (2 Nov): spending, payments, outside contact, public changes and authority changes stay owner-only.
+ if re.search(r'(?i)\b(paid|pay|payment|settle|launch|send|contact|outreach|order|listing|publication|live|authority|campaign)\b|\$',plain(t.get('name'))):return 'material_action_requires_existing_specific_authority'
  req=requirements(t)
  if not req['acceptance'] or not req['evidence']:return 'acceptance_or_evidence_missing'
  # Unknown native dependency shapes fail closed rather than being silently ignored.
  native=t.get('dependencies') or t.get('dependency') or t.get('predecessors')
  if native:return 'native_dependencies_require_review'
  deps=req['dependencies']
+ if not deps and baseline(t):deps='None'   # Zoho returns no dependency field; vetting is the explicit review
  if not deps:return 'dependencies_not_explicit'
  if deps.lower() not in ('none','none.'):
   refs=re.findall(r'\bM\d+-TL\d+-T\d+\b',deps)

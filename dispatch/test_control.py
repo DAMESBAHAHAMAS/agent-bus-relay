@@ -35,6 +35,18 @@ class Tests(unittest.TestCase):
    c=control.Control(tmp,adapter=Fake(),bus=B());c.journal=lambda r:None
    c.db.execute('INSERT INTO runs VALUES(?,?,?,?,?,?,?,?)',('x','p','t','systems','systems','dispatched',json.dumps({'mode':'execution'}),control.now()));c.db.commit()
    self.assertEqual(c.reconcile()[0]['state'],'acknowledged')
+ def test_vetted_baseline_task_is_ready(self):
+  t={'id':'t','name':'Verify a statute','description':'','vetted':True,'priority':'high','execution_actor':'Compliance','definition_of_done':'Marked verified','evidence_required':'Source link'}
+  self.assertEqual(control.owner({'name':'Knowledge Base'},t),'compliance');self.assertEqual(control.readiness({'name':'Knowledge Base'},t,[t]),'ready')
+ def test_vetted_needs_high_priority(self):
+  t={'id':'t','name':'x','description':'','vetted':True,'priority':'medium','execution_actor':'Compliance','definition_of_done':'d','evidence_required':'e'}
+  self.assertEqual(control.readiness(P,t,[t]),'approval_not_explicit')
+ def test_human_actor_not_dispatched(self):
+  t={'id':'t','name':'x','description':'','vetted':True,'priority':'high','execution_actor':'Damian','definition_of_done':'d','evidence_required':'e'}
+  self.assertEqual(control.readiness(P,t,[t]),'human_executor_required')
+ def test_vetted_material_action_still_held(self):
+  t={'id':'t','name':'Publish the five campaign blog articles','description':'','vetted':True,'priority':'high','execution_actor':'SalesM','definition_of_done':'d','evidence_required':'e'}
+  self.assertEqual(control.readiness(P,t,[t]),'material_action_requires_existing_specific_authority')
  def test_spoofed_party_rejected(self):
   class B:
    def status(self,cid):return {'from':'gpt','to':'systems','state':'acknowledged'}

@@ -2,7 +2,7 @@
 Plans are trusted code/configuration, never generated from an executor's reply.
 """
 import hashlib,json,pathlib,re
-ALLOWED_READS={'project_task','workdrive_text','workdrive_metadata'}
+ALLOWED_READS={'project_task','project_task_comments','workdrive_text','workdrive_metadata'}
 def acceptance_hash(task):
  from control import requirements
  return hashlib.sha256(json.dumps(requirements(task),sort_keys=True).encode()).hexdigest()
@@ -20,9 +20,16 @@ def verify(control,cid,plan_name,close=False):
  evidence=[]
  for check in plan['checks']:
   if check['operation'] not in ALLOWED_READS:raise ValueError('Unapproved verification operation')
-  actual=control.a.read(check['operation'],check['params'])
-  for key in check['path']:
-   actual=actual[key] if isinstance(key,int) else actual.get(key)
+  if check['operation']=='project_task_comments':
+   # Executors record evidence as task comments; read them as one plain text, and only on the task being verified.
+   from control import plain
+   if check['params']!={'project_id':row['project'],'task_id':row['task']}:raise ValueError('Comment check must target the verified task')
+   r=control.a.projects('GET',f"projects/{row['project']}/tasks/{row['task']}/comments?per_page=100")
+   actual='\n'.join(plain(x.get('comment') or x.get('content') or '') for x in (r if isinstance(r,list) else r.get('comments',[])))
+  else:
+   actual=control.a.read(check['operation'],check['params'])
+   for key in check['path']:
+    actual=actual[key] if isinstance(key,int) else actual.get(key)
   if 'equals' in check:passed=type(actual) is type(check['equals']) and actual==check['equals']
   elif 'contains' in check:passed=isinstance(actual,str) and bool(check['contains']) and check['contains'] in actual
   else:raise ValueError('Explicit equals/contains oracle required')
