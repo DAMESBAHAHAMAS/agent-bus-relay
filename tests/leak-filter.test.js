@@ -51,7 +51,9 @@ const CASES = [
   ["N18 Amex to GPT", "378282246310005", true, "a payment card number"],
   ["N19 Zoho-prefixed 19 digits next to a card word", "Visa card " + visa19, true, "a payment card number"],
   ["N20 Zoho-prefixed digits written with dashes", zohoLuhn.replace(/(\d{4})(?=\d)/g, "$1-"), true, "a payment card number"],
-  ["N21 Luhn-valid 19 digits, unknown prefix", withCheckDigit("601100000000000000"), true, "a payment card number"],
+  ["N21 Luhn-valid 19 digits, unknown prefix, near a card word", "card " + withCheckDigit("601100000000000000"), true, "a payment card number"],
+  ["Y-LENGTH unbroken Luhn-valid 19 digits, unknown prefix (#247)", "record " + withCheckDigit("601100000000000000"), true, null],
+  ["N-LENGTH 19 digits with dashes stay a card", withCheckDigit("601100000000000000").replace(/(\d{4})(?=\d)/g, "$1-"), true, "a payment card number"],
   ["N22 SSN to GPT", "SSN 123-45-6789", true, "a Social Security number"],
   ["N23 EIN to GPT", "EIN 12-3456789", true, "an employer identification number"],
 ];
