@@ -115,6 +115,8 @@ function zohoId(text, m) {
   const s = m[0].replace(/[ -]+$/, ""); // the card pattern also takes the space after a number
   return LEAK_EXEMPT && /^\d{18,19}$/.test(s) && ZOHO_ID_PREFIXES.some((p) => s.startsWith(p)) && !CARD_WORD.test(text.slice(Math.max(0, m.index - 40), m.index + s.length + 40));
 }
+// Decision #247 LENGTH: a 17-19 digit run with no space or dash inside is an identifier, not a printed card, unless a card word is near it.
+function unbrokenId(text, d, m) { return LEAK_EXEMPT && d.length >= 17 && !/[ -]/.test(m[0].trim()) && !CARD_WORD.test(text.slice(Math.max(0, m.index - 40), m.index + d.length + 40)); }
 function luhn(d) { let s = 0, alt = false; for (let i = d.length - 1; i >= 0; i--) { let n = +d[i]; if (alt) { n *= 2; if (n > 9) n -= 9; } s += n; alt = !alt; } return s % 10 === 0; }
 function leakReason(text, towardExternal) {
   for (const [re, what] of SECRET_PATTERNS) if (re.test(text)) return what;
@@ -122,7 +124,7 @@ function leakReason(text, towardExternal) {
   if (towardExternal) {
     if (/\b\d{3}-\d{2}-\d{4}\b/.test(text)) return "a Social Security number";
     if (/\b\d{2}-\d{7}\b/.test(text)) return "an employer identification number";
-    for (const m of text.matchAll(/\b(?:\d[ -]?){13,19}\b/g)) { const d = m[0].replace(/\D/g, ""); if (d.length >= 13 && d.length <= 19 && luhn(d) && !zohoId(text, m)) return "a payment card number"; }
+    for (const m of text.matchAll(/\b(?:\d[ -]?){13,19}\b/g)) { const d = m[0].replace(/\D/g, ""); if (d.length >= 13 && d.length <= 19 && luhn(d) && !zohoId(text, m) && !unbrokenId(text, d, m)) return "a payment card number"; }
   }
   return null;
 }
