@@ -264,10 +264,13 @@ async function api(key, method, pathAndQuery, body, timeoutMs) {
   return { status: r.status, json: j };
 }
 
-const job = (agent, cid) => agent + "|" + cid;
-async function handle(agent, key, env) {
+// One job per bus message, not per correlation id. A second request on an id already answered (a resend, or a follow-up sent with
+// --id) is new work and has its own row in the relay's ledger. Keyed by correlation id it counted as done, so the agent was never woken
+// and the relay escalated silence that nobody could see in this log (finance, 3 Nov: the "BLOCKER CLEARED" message never arrived).
+const job = (agent, messageId) => agent + "|" + messageId;
+async function handle(agent, key, env, messageId) {
   const cid = env.correlation_id;
-  const k = job(agent, cid);
+  const k = job(agent, messageId);
   if (busy.has(k) || done.has(k) || (attempts.get(k) || 0) >= MAX_ATTEMPTS) return;
   busy.add(k);
   attempts.set(k, (attempts.get(k) || 0) + 1);
@@ -382,22 +385,22 @@ async function loop(agent) {
     try {
       const r = await api(key, "GET", "/wait?since=" + since + "&timeout=25", null, 45000);
       if (r.status !== 200) { await sleep(r.status === 401 ? 60000 : 5000); continue; }
-      const todo = new Map();
+      const todo = new Map();   // message id -> envelope
       for (const m of r.json.messages || []) {
         since = Math.max(since, m.time);
-        if (m.envelope && m.envelope.type === "request") todo.set(m.envelope.correlation_id, m.envelope);
+        if (m.envelope && m.envelope.type === "request") todo.set(m.id, m.envelope);
       }
       state.since[agent] = since; save();
-      const waiting = (r.json.pending_acks || []).filter((p) => { const k = job(agent, p.correlation_id);
-        return !todo.has(p.correlation_id) && !done.has(k) && !busy.has(k) && (attempts.get(k) || 0) < MAX_ATTEMPTS; });
+      const waiting = (r.json.pending_acks || []).filter((p) => { const k = job(agent, p.message_id);
+        return !todo.has(p.message_id) && !done.has(k) && !busy.has(k) && (attempts.get(k) || 0) < MAX_ATTEMPTS; });
       if (waiting.length) {
         const all = await api(key, "GET", "/messages?for_me=1&since=0");
-        for (const m of all.json.messages || []) if (m.envelope && m.envelope.type === "request" && waiting.some((p) => p.correlation_id === m.envelope.correlation_id)) todo.set(m.envelope.correlation_id, m.envelope);
+        for (const m of all.json.messages || []) if (m.envelope && m.envelope.type === "request" && waiting.some((p) => p.message_id === m.id)) todo.set(m.id, m.envelope);
       }
       // Not awaited, so the agent keeps listening while it thinks. A failure inside (the relay restarting, a timeout) is logged here;
       // uncaught, it would end the whole bridge and leave every agent deaf until launchd restarts it (29 Oct). The job stays not-done,
       // so the next poll retries it within MAX_ATTEMPTS.
-      for (const env of todo.values()) handle(agent, key, env).catch((e) => log(agent, "request", env.correlation_id, "failed:", String(e && e.message || e).slice(0, 200)));
+      for (const [id, env] of todo) handle(agent, key, env, id).catch((e) => log(agent, "request", env.correlation_id, "failed:", String(e && e.message || e).slice(0, 200)));
       for (const m of r.json.channel_messages || []) {
         since = Math.max(since, m.time);
         handleChannel(agent, key, m).catch((e) => log(agent, "channel message", m.id, "failed:", String(e && e.message || e).slice(0, 200)));
