@@ -87,7 +87,6 @@ function parseEnvelope(text) {
 // ---------- leak filter ----------
 const SECRET_PATTERNS = [
   [/\b1000\.[0-9a-f]{20,}\.[0-9a-f]{20,}\b/i, "a Zoho token or grant code"],
-  [/\b[0-9a-f]{40,}\b/i, "a long key or token"],
   [/\bsk-[A-Za-z0-9_-]{20,}/, "an API key"],
   [/\b(rnd|ghp|gho|ghs|github_pat)_[A-Za-z0-9_]{20,}/, "an API key"],
   [/\bxox[abprs]-[A-Za-z0-9-]{10,}/, "a Slack token"],
@@ -96,13 +95,34 @@ const SECRET_PATTERNS = [
   [/\bBearer\s+[A-Za-z0-9._~+\/-]{24,}/i, "a bearer token"],
   [/\b(password|passwd|client_secret|refresh_token|api[_-]?key)\s*[:=]\s*["']?(?=[A-Za-z0-9._\/+-]*\d)[A-Za-z0-9._\/+-]{12,}/i, "a credential"],
 ];
+// Evidence hashes (R-0247). Any run of 40+ hex is still withheld as "a long key or token", except a lower-case git commit (40) or
+// SHA-256 (64) written straight after its label ("commit", "sha", "sha1", "sha-256", "checksum", "digest"), with no key, token,
+// secret or password word in front of it. Agents cite these as proof of work; they are public fingerprints, not credentials.
+// Rollback without a code change: set LEAK_FILTER_EXEMPTIONS=0 on Render and both exemptions below switch off.
+const LEAK_EXEMPT = env("LEAK_FILTER_EXEMPTIONS", "1") === "1";
+const LONG_HEX = /\b[0-9a-f]{40,}\b/gi;
+const HASH_LABEL = /\b(?:commit|sha(?:-?(?:1|256))?|checksum|digest)[\s:*`'"=]{0,6}$/i;
+const SECRET_WORD = /key|token|secret|passw|bearer|credential|auth/i;
+function labelledHash(text, m) {
+  const h = m[0], before = text.slice(Math.max(0, m.index - 40), m.index);
+  return LEAK_EXEMPT && (h.length === 40 || h.length === 64) && h === h.toLowerCase() && HASH_LABEL.test(before) && !SECRET_WORD.test(before);
+}
+// Zoho record ids (R-0247). Damian's Zoho apps issue 18-19 digit ids that pass the card checksum about 1 time in 10. An unbroken
+// run of 18-19 digits starting with one of these org prefixes is not a card, unless a card word is near it.
+const ZOHO_ID_PREFIXES = env("ZOHO_ID_PREFIXES", "1156860000,4916119000,2200180000,2654294000,2107587000").split(",").map((s) => s.trim()).filter(Boolean);
+const CARD_WORD = /card|visa|master|amex|discover|cvv|cvc|expir|payment|\bpan\b/i;
+function zohoId(text, m) {
+  const s = m[0].replace(/[ -]+$/, ""); // the card pattern also takes the space after a number
+  return LEAK_EXEMPT && /^\d{18,19}$/.test(s) && ZOHO_ID_PREFIXES.some((p) => s.startsWith(p)) && !CARD_WORD.test(text.slice(Math.max(0, m.index - 40), m.index + s.length + 40));
+}
 function luhn(d) { let s = 0, alt = false; for (let i = d.length - 1; i >= 0; i--) { let n = +d[i]; if (alt) { n *= 2; if (n > 9) n -= 9; } s += n; alt = !alt; } return s % 10 === 0; }
 function leakReason(text, towardExternal) {
   for (const [re, what] of SECRET_PATTERNS) if (re.test(text)) return what;
+  for (const m of text.matchAll(LONG_HEX)) if (!labelledHash(text, m)) return "a long key or token";
   if (towardExternal) {
     if (/\b\d{3}-\d{2}-\d{4}\b/.test(text)) return "a Social Security number";
     if (/\b\d{2}-\d{7}\b/.test(text)) return "an employer identification number";
-    for (const m of text.matchAll(/\b(?:\d[ -]?){13,19}\b/g)) { const d = m[0].replace(/\D/g, ""); if (d.length >= 13 && d.length <= 19 && luhn(d)) return "a payment card number"; }
+    for (const m of text.matchAll(/\b(?:\d[ -]?){13,19}\b/g)) { const d = m[0].replace(/\D/g, ""); if (d.length >= 13 && d.length <= 19 && luhn(d) && !zohoId(text, m)) return "a payment card number"; }
   }
   return null;
 }
