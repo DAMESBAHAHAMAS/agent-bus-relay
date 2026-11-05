@@ -1,0 +1,205 @@
+{
+ "project": "1156860000009530061",
+ "task": "1156860000009664007",
+ "acceptance_sha256": "641a3ccced162dcf40c4f27d88e99effbffba590a417341ed391f52f4d973518",
+ "author": "Claude Code (independent verification, vr-284917fb3f8c174c7adf4c31-r2), 5 Nov 2026; both results files read locally in full and sha256 matched; 97 rows each; every screenshot name found in the zip; live bundle index-BtpUmYRD.js confirmed",
+ "checks": [
+  {
+   "criterion": "Task is A6Y2-T87",
+   "operation": "project_task",
+   "params": {
+    "project_id": "1156860000009530061",
+    "task_id": "1156860000009664007"
+   },
+   "path": [
+    "prefix"
+   ],
+   "equals": "A6Y2-T87"
+  },
+  {
+   "criterion": "Brand sheet is its own file, named as reported",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevwbdcad4a23d76484393ce7b1d5bc29920"
+   },
+   "path": [
+    "name"
+   ],
+   "equals": "2026-11-05_DK-151_T87_brand-results-rendered.md"
+  },
+  {
+   "criterion": "Brand sheet has the checksum read independently",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevwbdcad4a23d76484393ce7b1d5bc29920"
+   },
+   "path": [
+    "sha256"
+   ],
+   "equals": "e8470f4fada0c8efcf921a8a0eb9fc1b1ee2e40c765edd16978a62a741897a10"
+  },
+  {
+   "criterion": "Brand tests cover colour",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevwbdcad4a23d76484393ce7b1d5bc29920"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**B1 Colour.**"
+  },
+  {
+   "criterion": "Brand tests cover font",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevwbdcad4a23d76484393ce7b1d5bc29920"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**B2 Font.**"
+  },
+  {
+   "criterion": "Brand tests cover layout",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevwbdcad4a23d76484393ce7b1d5bc29920"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**B4 Layout.**"
+  },
+  {
+   "criterion": "Brand tests cover responsive design",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevwbdcad4a23d76484393ce7b1d5bc29920"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**B5 Responsive.**"
+  },
+  {
+   "criterion": "Brand per-page pass/fail table with URL and screenshot columns",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevwbdcad4a23d76484393ce7b1d5bc29920"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "| # | URL | Sitemap | B1 Colour |"
+  },
+  {
+   "criterion": "Brand sheet covers 97 pages (last row)",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevwbdcad4a23d76484393ce7b1d5bc29920"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "| 97 | https://damianknowles.com"
+  },
+  {
+   "criterion": "Navigation sheet is its own file, named as reported",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevw965ca24805d74243a05ff016cd90ed9e"
+   },
+   "path": [
+    "name"
+   ],
+   "equals": "2026-11-05_DK-151_T87_navigation-results-rendered.md"
+  },
+  {
+   "criterion": "Navigation sheet has the checksum read independently",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevw965ca24805d74243a05ff016cd90ed9e"
+   },
+   "path": [
+    "sha256"
+   ],
+   "equals": "419f0facc97e04db57baabfc4c2fd67b0cd1446bcc05d08f53f6eda4b90e7980"
+  },
+  {
+   "criterion": "Navigation tests cover click depth",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevw965ca24805d74243a05ff016cd90ed9e"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**N1** Click depth from the homepage is 2 or fewer"
+  },
+  {
+   "criterion": "Navigation tests cover links and destinations",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevw965ca24805d74243a05ff016cd90ed9e"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**N3** Link destination matches its label"
+  },
+  {
+   "criterion": "Navigation tests cover redirects",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevw965ca24805d74243a05ff016cd90ed9e"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**N4** No internal link on the page goes through a redirect"
+  },
+  {
+   "criterion": "Navigation redirect log present",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevw965ca24805d74243a05ff016cd90ed9e"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "## Redirect log"
+  },
+  {
+   "criterion": "Navigation per-page pass/fail table with URL",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevw965ca24805d74243a05ff016cd90ed9e"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "| URL | Sitemap | Depth | Click path | N1 |"
+  },
+  {
+   "criterion": "Task comments link the brand sheet",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009530061",
+    "task_id": "1156860000009664007"
+   },
+   "path": [],
+   "contains": "hxevwbdcad4a23d76484393ce7b1d5bc29920"
+  },
+  {
+   "criterion": "Task comments link the navigation sheet",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009530061",
+    "task_id": "1156860000009664007"
+   },
+   "path": [],
+   "contains": "hxevw965ca24805d74243a05ff016cd90ed9e"
+  }
+ ]
+}

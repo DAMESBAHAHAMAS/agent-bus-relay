@@ -15,6 +15,23 @@ class Tests(unittest.TestCase):
   self.patch=patch.object(verification,'__file__',str(self.root/'verification.py'));self.patch.start()
  def save(self):(self.root/'plans/task.json').write_text(json.dumps(self.plan))
  def tearDown(self):self.patch.stop();self.c.db.close();self.tmp.cleanup()
+ def _file_plan(self,executor):
+  self.c.db.execute('UPDATE runs SET executor=?',(executor,));self.c.db.commit()
+  self.plan['checks']=[{'criterion':'the file','operation':'workdrive_text','params':{'resource_id':'f'},'path':['name'],'equals':'test'}];self.save()
+ def test_a_work_file_is_read_by_an_identity_that_can_open_it(self):
+  self._file_plan('salesmkt');other=Adapter();other.t=dict(self.a.t);seen=[]
+  with patch.object(self.c,'file_reader',lambda who:seen.append(who) or other):verification.verify(self.c,'x','task.json')
+  self.assertEqual(seen,['salesmkt'])
+ def test_finance_files_stay_behind_the_wall(self):
+  self.assertIs(self.c.file_reader('finance'),self.c.a)
+  self.assertIs(self.c.file_reader('bizops'),self.c.a)
+ def test_the_task_record_is_never_read_through_the_executor(self):
+  self.save()
+  with patch.object(self.c,'file_reader',side_effect=AssertionError('no')):self.assertEqual(verification.verify(self.c,'x','task.json')['state'],'verified_deliverable')
+ def test_a_failed_file_check_still_keeps_the_task_open(self):
+  self._file_plan('salesmkt');other=Adapter();other.t=dict(self.a.t);other.t['name']='different'
+  with patch.object(self.c,'file_reader',lambda who:other),self.assertRaises(ValueError):verification.verify(self.c,'x','task.json',True)
+  self.assertEqual(self.a.writes,0)
  def test_verified_then_close_readback(self):
   self.assertEqual(verification.verify(self.c,'x','task.json')['state'],'verified_deliverable');self.assertEqual(self.a.writes,0)
   self.assertEqual(verification.verify(self.c,'x','task.json',True)['state'],'completed');self.assertEqual(self.a.writes,1)

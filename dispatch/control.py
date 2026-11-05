@@ -28,6 +28,7 @@ BASELINE_WINDOW = ('2026-10-30','2026-11-08')
 def in_window(v):return bool(v) and BASELINE_WINDOW[0]<=str(v)[:10]<=BASELINE_WINDOW[1]
 def baseline(t):return truthy(t.get('vetted')) and str(t.get('priority') or '').lower()=='high' and in_window(t.get('start_date')) and in_window(t.get('end_date'))
 # Sent and not yet answered. Finished, blocked or stalled work must never hold the next task back.
+FILE_READERS = ('salesmkt','systems','compliance','codedev')
 OCCUPYING = ('send_attempted','dispatched','awaiting_ack','acknowledged','ack_overdue','delivery_outcome_unknown')
 POLLED = OCCUPYING+('blocked','stalled','resumable')
 STALL_HOURS = 6      # an agent turn takes minutes; no result in this long is a stall, not work
@@ -168,6 +169,12 @@ class Control:
   try:self.db.execute('ALTER TABLE escalations ADD COLUMN refused INTEGER DEFAULT 0');self.db.commit()
   except sqlite3.OperationalError:pass   # already there
   self.seen=set();self.queue=[];self.gate_results=[];self.halt=None;self.undeliverable=[]
+ def file_reader(self,executor):
+  """Who opens a plan's work file. The verifier who wrote the plan gives the independence; this only supplies a login that
+  can reach the file, for the same four read-only operations. Finance stays behind its wall until Damian rules otherwise."""
+  if executor not in FILE_READERS:return self.a
+  from backend import Adapter
+  return Adapter(executor)
  def rows(self):return [dict(r) for r in self.db.execute('SELECT * FROM runs')]
  def save(self,cid,state,data):
   self.db.execute('UPDATE runs SET state=?,data=?,updated=? WHERE cid=?',(state,json.dumps(data),now(),cid));self.db.execute('INSERT INTO events(cid,state,data,at) VALUES(?,?,?,?)',(cid,state,json.dumps(data),now()));self.db.commit()
