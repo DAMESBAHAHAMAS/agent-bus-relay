@@ -688,7 +688,12 @@ class Control:
   rot=self.rotate_audit()
   if rot and rot.startswith('rotation failed'):failed.append(rot)
   o=self.db.execute('SELECT COUNT(*) n,MIN(first_at) f FROM escalations WHERE resolved_at IS NULL').fetchone()
-  (self.root/'latest-run.json').write_text(json.dumps({'at':now(),'ok':not failed,'errors':failed,'halt':self.halt,'states':dict(Counter(str(x.get('state')).split(':')[0] for x in d)),'dispatched':[x.get('prefix') for x in d if x.get('state')=='dispatched'],'gates':self.gate_results,'verified':result.get('verified') or [],'escalated':esc,'open_escalations':o['n'],'oldest_escalation':o['f'],'undeliverable':self.undeliverable},indent=2))
+  rows=[(x,safe_json(x['data'])) for x in self.rows() if x['task']]
+  verified=[e['prefix'] for e in (safe_json(v['data']) for v in self.db.execute("SELECT data FROM events WHERE state='independently_verified'")) if e.get('prefix')]
+  by=Counter(x['state'] for x,_ in rows)
+  sent24=self.db.execute("SELECT COUNT(*) n FROM events WHERE state='dispatched' AND at>=?",((dt.datetime.now(dt.timezone.utc)-dt.timedelta(hours=24)).isoformat(),)).fetchone()['n']
+  totals={'closed_verified':sorted(set(verified)),'awaiting_check':[y.get('prefix') for x,y in rows if x['state']=='awaiting_verification'],'blocked':by['blocked'],'stalled':by['stalled'],'in_progress':sum(by[k] for k in OCCUPYING),'sent_24h':sent24}
+  (self.root/'latest-run.json').write_text(json.dumps({'at':now(),'ok':not failed,'errors':failed,'halt':self.halt,'states':dict(Counter(str(x.get('state')).split(':')[0] for x in d)),'dispatched':[x.get('prefix') for x in d if x.get('state')=='dispatched'],'gates':self.gate_results,'verified':result.get('verified') or [],'totals':totals,'escalated':esc,'open_escalations':o['n'],'oldest_escalation':o['f'],'undeliverable':self.undeliverable},indent=2))
 
 def cycle(c):
  """Every phase runs whatever the last one did, so the system can always report its own failure."""
