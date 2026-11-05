@@ -499,4 +499,14 @@ class Totals(unittest.TestCase):
    c=ctl(tmp,[base(execution_actor='Damian')],Bus());row(c,task='a',cid='a',state='awaiting_verification',prefix='AB1-T5');row(c,task='b',cid='b',state='blocked',blocker='x')
    c.db.execute("INSERT INTO events(cid,state,data,at) VALUES('c','independently_verified',?,?)",(json.dumps({'prefix':'AB1-T9'}),control.now()));c.db.commit();control.cycle(c)
    h=json.loads((c.root/'latest-run.json').read_text())['totals'];self.assertEqual(h['closed_verified'],['AB1-T9']);self.assertEqual(h['awaiting_check'],['AB1-T5']);self.assertEqual(h['blocked'],1)
+class VerifyWording(unittest.TestCase):
+ def test_the_hash_passes_the_relays_label_rule(self):
+  class B(Bus):
+   text=''
+   def verify_request(self,cid,text):B.text=text
+  with tempfile.TemporaryDirectory() as tmp:
+   c=ctl(tmp,[base()],B());row(c,state='awaiting_verification',cid='x',prefix='AB1-T1')
+   with patch.object(c,'plan_path',lambda code:__import__('pathlib').Path(tmp)/'none.json'):c.verify_ready()
+   m=re.search(r'[0-9a-f]{64}',B.text);before=B.text[:m.start()]
+   self.assertRegex(before,r"(?i)\b(?:commit|sha(?:-?(?:1|256))?|checksum|digest)[\s:*`'\"=]{0,6}$")
 if __name__=='__main__':unittest.main()
