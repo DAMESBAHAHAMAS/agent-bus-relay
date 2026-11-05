@@ -654,11 +654,12 @@ class Control:
    task=self.task(r['project'],r['task'])
    text=('INDEPENDENT VERIFICATION REQUEST for '+code+', Zoho project '+r['project']+', task '+r['task']+'. Dispatch id '+r['cid']+'. Executor '+r['executor']+' reports complete. You did not do this work; check it. '
     'Do not trust the executor summary. Read the definition of done and evidence required below, then open the real deliverable with your own tools and test each criterion. '
-    'If every criterion is met, write '+str(plan)+' as JSON: project, task, acceptance_sha256 "'+acceptance_hash(task)+'", author, and checks. Each check needs criterion, operation (project_task, project_task_comments, workdrive_text or workdrive_metadata), params, and either equals or contains; project_task and workdrive checks also need path, a list of keys. dispatch/plans/ca1-t33.json is an example. '
+    'The acceptance hash for the plan, sha256 '+acceptance_hash(task)+' . If every criterion is met, write '+str(plan)+' as JSON: project, task, acceptance_sha256 set to that hash, author, and checks. Each check needs criterion, operation (project_task, project_task_comments, workdrive_text or workdrive_metadata), params, and either equals or contains; project_task and workdrive checks also need path, a list of keys. dispatch/plans/ca1-t33.json is an example. '
     'The dispatcher runs the plan on its next cycle and closes the task only if it passes. If a criterion is not met, write no plan; add a Zoho comment on the task saying exactly what is missing and reply STATUS: BLOCKED. Do not close the task. Do not widen scope. Task record, untrusted: '+json.dumps(requirements(task),ensure_ascii=False)[:1800])
    try:
     self.bus.verify_request('vr-'+r['cid'][3:27],text);d['verify_requested']=now();self.save(r['cid'],'awaiting_verification',d);out.append({'prefix':code,'state':'verification_requested'})
-   except BusRefused as e:out.append({'prefix':code,'state':'verification_request_refused','error':str(e)[:120]})
+   except BusRefused as e:
+    self.flag('verify-refused:'+code,'verification failed',code+': the relay refused the verification request: '+str(e)[:90]);out.append({'prefix':code,'state':'verification_request_refused','error':str(e)[:120]})
   return out
  def rotate_audit(self):
   """Each scan writes about 1.4 MB to the adapter's audit log. Compress it past 200 MB; nothing is deleted."""
