@@ -493,4 +493,10 @@ class Verification(unittest.TestCase):
    with patch.object(c,'plan_path',lambda code:p),patch('verification.verify',side_effect=ValueError('Acceptance check failed; task remains open')):
     r=c.verify_ready()
    self.assertEqual(r[0]['state'],'verification_failed');self.assertEqual(c.rows()[0]['state'],'awaiting_verification');c.flush();self.assertTrue(alerts(b,'VERIFICATION FAILED'))
+class Totals(unittest.TestCase):
+ def test_heartbeat_reports_what_the_dashboard_shows(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=ctl(tmp,[base(execution_actor='Damian')],Bus());row(c,task='a',cid='a',state='awaiting_verification',prefix='AB1-T5');row(c,task='b',cid='b',state='blocked',blocker='x')
+   c.db.execute("INSERT INTO events(cid,state,data,at) VALUES('c','independently_verified',?,?)",(json.dumps({'prefix':'AB1-T9'}),control.now()));c.db.commit();control.cycle(c)
+   h=json.loads((c.root/'latest-run.json').read_text())['totals'];self.assertEqual(h['closed_verified'],['AB1-T9']);self.assertEqual(h['awaiting_check'],['AB1-T5']);self.assertEqual(h['blocked'],1)
 if __name__=='__main__':unittest.main()
