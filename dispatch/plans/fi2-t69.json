@@ -1,0 +1,184 @@
+{
+ "project": "1156860000009156003",
+ "task": "1156860000009659004",
+ "acceptance_sha256": "afd3e806de34ac4c3da43db6a28002f9271c4eb7729f566b3452708d5f22c5f2",
+ "author": "Claude Code (Business Operations accountable), 3 Nov 2026; file read independently through the Finance WorkDrive tool and hashed locally; DoD label corrected to the file's exact wording after first read (plan error, not a deliverable defect)",
+ "checks": [
+  {
+   "criterion": "Task is FI2-T69",
+   "operation": "project_task",
+   "params": {
+    "project_id": "1156860000009156003",
+    "task_id": "1156860000009659004"
+   },
+   "path": [
+    "prefix"
+   ],
+   "equals": "FI2-T69"
+  },
+  {
+   "criterion": "Matrix file has the checksum finance reported",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "sha256"
+   ],
+   "equals": "b35f26e95d876955cf2f906273c6f0d9139243a168c489748da2089741055b14"
+  },
+  {
+   "criterion": "Matrix file is the v1 matrix",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "name"
+   ],
+   "equals": "2026-11-03_Finance_Account_Tracking_Matrix_v1.md"
+  },
+  {
+   "criterion": "Row for BofA",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "## 1. Bank of America"
+  },
+  {
+   "criterion": "Row for Chime",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "## 2. Chime"
+  },
+  {
+   "criterion": "Row for Square",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "## 3. Square"
+  },
+  {
+   "criterion": "Row for Cash App",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "## 4. Cash App"
+  },
+  {
+   "criterion": "Row for Stripe",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "## 5. Stripe"
+  },
+  {
+   "criterion": "Field Source",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**Source:**"
+  },
+  {
+   "criterion": "Field Capture method",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**Capture method:**"
+  },
+  {
+   "criterion": "Field Current status",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**Current status:**"
+  },
+  {
+   "criterion": "Field Blocker",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**Blocker:**"
+  },
+  {
+   "criterion": "Field Owner",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**Owner:**"
+  },
+  {
+   "criterion": "Field Next action",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**Next action:**"
+  },
+  {
+   "criterion": "Field Definition of Done",
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+   },
+   "path": [
+    "content"
+   ],
+   "contains": "**Definition of Done (PASS/FAIL):**"
+  },
+  {
+   "criterion": "Matrix linked on the task",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009156003",
+    "task_id": "1156860000009659004"
+   },
+   "path": [],
+   "contains": "3n6cqa5657fa2403f4b65b076cabbbed7908c"
+  }
+ ]
+}
