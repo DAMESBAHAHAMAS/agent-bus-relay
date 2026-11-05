@@ -1,0 +1,50 @@
+{
+ "project": "1156860000009157037",
+ "task": "1156860000009672001",
+ "acceptance_sha256": "d3e2531972ee99db9d9a3f6dd1f4aa0a918dd6df5dfad0517584433a31326e6c",
+ "author": "Claude Code (independent verification, 5 Nov 2026); CANON folder read directly via WorkDrive connector, Mac mount and legacy paths checked locally",
+ "checks": [
+  {
+   "criterion": "Task is CA1-T40",
+   "operation": "project_task",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009672001"
+   },
+   "path": [
+    "prefix"
+   ],
+   "equals": "CA1-T40"
+  },
+  {
+   "criterion": "Verified WorkDrive folder link recorded on the task",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009672001"
+   },
+   "path": [],
+   "contains": "https://docs.damianknowles.com/folder/p7w3t11f4f42cc9274bfe8dc948ec3ac03c04"
+  },
+  {
+   "criterion": "Mac mount status recorded on the task",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009672001"
+   },
+   "path": [],
+   "contains": "Mac mount: resolves"
+  },
+  {
+   "criterion": "Mirror, legacy and obsolete path list recorded on the task",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009672001"
+   },
+   "path": [],
+   "contains": "ZZ_DO_NOT_USE_OLD_CANON_SUPERSEDED_2026-09-28"
+  }
+ ]
+}
