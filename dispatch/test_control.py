@@ -75,6 +75,7 @@ class Zoho:
  def project_allowed(self,p):return True
  def read(self,op,args):
   if op=='project_milestones':return []
+  if op=='calendar_events':return {'events':[]}
   return next(t for t in self.ts if t['id']==args['task_id'])
  def projects(self,m,path,body=None):
   if m=='PATCH':
@@ -509,6 +510,52 @@ class VerifyWording(unittest.TestCase):
    with patch.object(c,'plan_path',lambda code:__import__('pathlib').Path(tmp)/'none.json'):c.verify_ready()
    m=re.search(r'[0-9a-f]{64}',B.text);before=B.text[:m.start()]
    self.assertRegex(before,r"(?i)\b(?:commit|sha(?:-?(?:1|256))?|checksum|digest)[\s:*`'\"=]{0,6}$")
+class HonestHeartbeat(unittest.TestCase):
+ """Green has to mean nothing failed. Every path below used to report ok with no error."""
+ def _hb(self,c,**res):
+  base_={'receipts':[],'dispatch':[],'errors':[]};base_.update(res);c.heartbeat(base_);return json.loads((c.root/'latest-run.json').read_text())
+ def _c(self,tmp,t=None,b=None):return ctl(tmp,[t or base()],b or Bus())
+ def test_clean_run_is_green(self):
+  with tempfile.TemporaryDirectory() as tmp:self.assertTrue(self._hb(self._c(tmp))['ok'])
+ def test_a_halt_is_red(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=self._c(tmp);c.halt='gates.json cannot be read';h=self._hb(c);self.assertFalse(h['ok']);self.assertIn('gates.json',h['errors'][0])
+ def test_an_unknown_gate_is_red(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=self._c(tmp);c.gate_results=[{'id':'g','state':'unknown','detail':'register unreadable'}];self.assertFalse(self._hb(c)['ok'])
+ def test_a_refused_send_is_red(self):
+  class B(Bus):
+   def send(self,to,cid,text):raise control.BusRefused('429 rate limit')
+  with tempfile.TemporaryDirectory() as tmp:
+   c=self._c(tmp,b=B());c.scan(True);h=self._hb(c);self.assertFalse(h['ok']);self.assertTrue(any('refused' in e for e in h['errors']))
+ def test_a_failed_journal_write_is_red_on_a_polled_row(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=self._c(tmp);row(c,state='blocked',cid='pd-j',prefix='AB1-T1',mode='execution',blocked_on=[],requested_at=control.now())
+   with patch.object(c,'journal',side_effect=RuntimeError('zoho down')):c.reconcile()
+   self.assertFalse(self._hb(c)['ok'])
+ def test_a_calendar_failure_is_red(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=self._c(tmp)
+   with patch.object(c.a,'read',side_effect=RuntimeError('calendar down')):
+    try:c.report()
+    except Exception:pass
+   self.assertFalse(self._hb(c)['ok'])
+ def test_an_unread_verifier_answer_is_red(self):
+  class B(Bus):
+   def status(self,cid):raise OSError('relay down')
+  with tempfile.TemporaryDirectory() as tmp:
+   c=self._c(tmp,b=B());row(c,state='awaiting_verification',cid='pd-v',prefix='AB1-T1',mode='execution',verify_requested=control.now())
+   with patch.object(c,'plan_path',lambda code:__import__('pathlib').Path(tmp)/'none.json'):c.verify_ready()
+   self.assertFalse(self._hb(c)['ok'])
+ def test_problems_do_not_carry_into_the_next_run(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=self._c(tmp);c.problem('one');c.problem('one');self.assertEqual(self._hb(c)['errors'],['one'])
+   self.assertTrue(self._hb(c)['ok'])
+ def test_a_crash_in_the_heartbeat_does_not_leave_the_old_green_file(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=self._c(tmp);(c.root/'latest-run.json').write_text('{"ok":true,"at":"old"}')
+   with patch.object(c,'heartbeat',side_effect=RuntimeError('boom')),patch.object(c,'reconcile',return_value=[]),patch.object(c,'scan',return_value=[]),patch.object(c,'verify_ready',return_value=[]),patch.object(c,'report',return_value={}),patch.object(c,'flush',return_value=[]):control.cycle(c)
+   h=json.loads((c.root/'latest-run.json').read_text());self.assertFalse(h['ok']);self.assertIn('boom',h['errors'][0])
 class ResumeNote(unittest.TestCase):
  """Direction left in a RESUME comment has to reach the agent, which may have no way to read comments."""
  def _run(self,comments):

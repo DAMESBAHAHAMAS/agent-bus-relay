@@ -168,13 +168,16 @@ class Control:
   self.db.executescript('CREATE TABLE IF NOT EXISTS runs (cid TEXT PRIMARY KEY, project TEXT, task TEXT, owner TEXT, executor TEXT, state TEXT, data TEXT, updated TEXT, UNIQUE(project,task)); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, cid TEXT, state TEXT, data TEXT, at TEXT); CREATE TABLE IF NOT EXISTS escalations (key TEXT PRIMARY KEY, kind TEXT, text TEXT, first_at TEXT, level INTEGER, sent_at TEXT, missed INTEGER DEFAULT 0, resolved_at TEXT, refused INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS gate_state (id TEXT PRIMARY KEY, state TEXT, detail TEXT, changed_at TEXT, announced INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS assignments (code TEXT PRIMARY KEY, tries INTEGER);')
   try:self.db.execute('ALTER TABLE escalations ADD COLUMN refused INTEGER DEFAULT 0');self.db.commit()
   except sqlite3.OperationalError:pass   # already there
-  self.seen=set();self.queue=[];self.gate_results=[];self.halt=None;self.undeliverable=[]
+  self.seen=set();self.queue=[];self.gate_results=[];self.halt=None;self.undeliverable=[];self.problems=[]
  def file_reader(self,executor):
   """Who opens a plan's work file. The verifier who wrote the plan gives the independence; this only supplies a login that
   can reach the file, for the same four read-only operations. Finance stays behind its wall until Damian rules otherwise."""
   if executor not in FILE_READERS:return self.a
   from backend import Adapter
   return Adapter(executor)
+ def problem(self,text):
+  """Anything that failed this run and was handled. The heartbeat cannot be green while this list holds anything."""
+  if text not in self.problems:self.problems.append(text)
  def rows(self):return [dict(r) for r in self.db.execute('SELECT * FROM runs')]
  def save(self,cid,state,data):
   self.db.execute('UPDATE runs SET state=?,data=?,updated=? WHERE cid=?',(state,json.dumps(data),now(),cid));self.db.execute('INSERT INTO events(cid,state,data,at) VALUES(?,?,?,?)',(cid,state,json.dumps(data),now()));self.db.commit()
@@ -270,7 +273,7 @@ class Control:
   except BusRefused as e:
    # Nothing was posted. Keep the row retryable, later, rather than treating it as uncertain.
    data['refused']=str(e)[:200];data['retry_after']=(dt.datetime.now(dt.timezone.utc)+dt.timedelta(hours=1)).isoformat();self.save(cid,'prepared',data)
-   self.flag('refused:'+str(t.get('prefix')),'bus refused',str(t.get('prefix'))+': the relay refused the request: '+str(e)[:100]);return {'cid':cid,'state':'refused'}
+   self.problem('the relay refused a request');self.flag('refused:'+str(t.get('prefix')),'bus refused',str(t.get('prefix'))+': the relay refused the request: '+str(e)[:100]);return {'cid':cid,'state':'refused'}
   except Exception as e:
    data['error']=str(e);self.save(cid,'delivery_outcome_unknown',data);raise
   self.journal_safe(cid)
@@ -289,7 +292,8 @@ class Control:
   row=dict(self.db.execute('SELECT * FROM runs WHERE cid=?',(cid,)).fetchone());data=json.loads(row['data'])
   if data.get('journaled')==row['state']:return None
   try:self.journal(row)
-  except Exception as e:return {'cid':cid,'journal_error':str(e)[:160]}
+  except Exception as e:
+   self.problem('a Zoho journal write failed');return {'cid':cid,'journal_error':str(e)[:160]}
   data['journaled']=row['state'];self.db.execute('UPDATE runs SET data=? WHERE cid=?',(json.dumps(data),cid));self.db.commit()
  def reconcile_row(self,row):
   cid,st=row['cid'],row['state'];data=json.loads(row['data'])
@@ -356,7 +360,7 @@ class Control:
   start=dt.datetime.now(dt.timezone.utc);events=[];calendar_error=None
   try:
    r=self.a.read('calendar_events',{'start':start.strftime('%Y%m%dT%H%M%SZ'),'end':(start+dt.timedelta(days=7)).strftime('%Y%m%dT%H%M%SZ')});events=r.get('events',[])
-  except Exception as e:calendar_error=str(e)
+  except Exception as e:calendar_error=str(e);self.problem('the calendar read failed')
   scan=json.loads((self.root/'latest-scan.json').read_text()) if (self.root/'latest-scan.json').exists() else []
   report={'queue_exceptions':scan,'generated_at':now(),'notification_policy':'pull only; no routine notifications','calendar_error':calendar_error,'functions':{}}
   for fn in sorted(INTERNAL):
@@ -595,7 +599,7 @@ class Control:
    self.db.execute('INSERT INTO events(cid,state,data,at) VALUES(?,?,?,?)',('assign-'+code,'actor_assigned',json.dumps({'prefix':code,'actor':label}),now()));self.db.commit()
    return True
   except Exception as e:
-   self.flag('no-owner:'+code,'no execution owner',code+': assigning '+label+' failed: '+str(e)[:100]);return False
+   self.problem('assigning an execution owner failed');self.flag('no-owner:'+code,'no execution owner',code+': assigning '+label+' failed: '+str(e)[:100]);return False
  def note(self,code,t,reason,row,index,tasks):
   """A blocked task nobody hears about is the failure this file exists to end."""
   name=G.clean(t.get('name'))[:60]
@@ -665,7 +669,8 @@ class Control:
    if d.get('verify_requested'):
     # The verifier's answer counts. A failed check goes back to the blocker flow with the reason, rather than waiting in silence.
     try:s=self.bus.status(d.get('verify_id') or 'vr-'+r['cid'][3:27])   # rows asked before 5 Nov carry no verify_id
-    except (OSError,RuntimeError):s=None
+    except (OSError,RuntimeError):
+     s=None;self.problem('a verifier answer could not be read')
     text='\n'.join(x.get('text','') for x in ((s or {}).get('replies') or []))
     said=re.findall(r'STATUS:\s*BLOCKED',text)
     if said:
@@ -703,10 +708,12 @@ class Control:
   from collections import Counter
   d=result.get('dispatch') or [];r=result.get('receipts') or [];esc=result.get('escalated') or []
   # A run that could not reach the bus or Zoho is not a healthy run, whatever each handler did with the error.
-  failed=list(result.get('errors') or [])
+  failed=list(result.get('errors') or [])+self.problems;self.problems=[]
+  if self.halt:failed.append('dispatch halted: '+str(self.halt))
+  if any(g.get('state')=='unknown' for g in self.gate_results):failed.append('a gate could not be read')
   status=[x for x in r if x.get('status_error')]
   if status:failed.append(str(len(status))+' status reads failed: '+status[0]['status_error'])
-  if any(x.get('journal_error') for x in r):failed.append('a Zoho journal write failed')
+  if any(x.get('journal_error') for x in r) and 'a Zoho journal write failed' not in failed:failed.append('a Zoho journal write failed')
   if any(x.get('error') for x in esc):failed.append('an escalation could not be delivered')
   if any(x.get('state')=='dispatch_failed' for x in d):failed.append('a dispatch failed')
   if any(x.get('error') for x in (result.get('verified') or [])):failed.append('a verification could not finish')
@@ -745,7 +752,9 @@ def cycle(c):
  result['report']=phase('report',c.report)   # before the digest, so a report failure still reaches someone
  partial=scanned is None or any(x.get('state')=='PRIMARY_TOOL_ACCESS_FAILED' for x in result['dispatch'])
  result['escalated']=phase('flush',lambda:c.flush(sweep=not partial))
- c.heartbeat(result)
+ try:c.heartbeat(result)
+ except Exception as e:   # never leave the last green file standing
+  (c.root/'latest-run.json').write_text(json.dumps({'at':now(),'ok':False,'errors':['heartbeat: '+str(e)[:200]]}))
  return result
 def on_deadline(*_):raise RunDeadline('run passed its '+str(RUN_DEADLINE)+' second deadline')
 def main():
