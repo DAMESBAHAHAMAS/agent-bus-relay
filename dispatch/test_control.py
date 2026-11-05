@@ -441,4 +441,10 @@ class Blockers(unittest.TestCase):
   n=[]
   with tempfile.TemporaryDirectory() as tmp:
    c=ctl(tmp,[base()],Bus());c.journal=lambda r:n.append(r['state']);row(c,state='completed');c.reconcile();c.reconcile();c.reconcile();self.assertEqual(n,['completed'])
+class Withheld(unittest.TestCase):
+ def test_withheld_reply_frees_the_function_and_escalates_at_once(self):
+  class B(Bus):
+   def status(self,cid):return {'from':'claude-systems','to':'compliance','state':'acknowledged','acknowledged_by':'compliance','replies':[{'text':'Received. Part 1 of 2 of my reply was withheld by the relay: It appeared to contain a long key or token.'}]}
+  with tempfile.TemporaryDirectory() as tmp:
+   b=B();c=ctl(tmp,[base()],b);row(c,state='acknowledged',cid='x');c.reconcile();self.assertEqual(c.rows()[0]['state'],'stalled');c.scan(True);c.flush();self.assertTrue(alerts(b,'STALLED'));self.assertFalse(c.busy('compliance','other'))
 if __name__=='__main__':unittest.main()

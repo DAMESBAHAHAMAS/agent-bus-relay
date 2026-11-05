@@ -309,6 +309,9 @@ class Control:
      if str(proof.get('proof_task_id'))==row['task'] and proof.get('proof_task_name')==current['name'] and proof.get('proof_closed') is closed(current):
       state='verified_proof';data['verification']={'independent_read_at':now(),'task_id':current['id'],'name':current['name'],'closed':closed(current)}
   elif st in ('blocked','resumable'):state=st
+  elif st in OCCUPYING and 'withheld by the relay' in text:
+   # The agent answered and the relay kept the part that held its status. Waiting 6 hours would only hold the function back.
+   state='stalled';data['blocker']='the relay withheld part of the reply, so no status arrived';data['stalled_at']=now();data['never_acked']=False
   elif st=='stalled' or age>=STALL_HOURS:
    if st!='stalled':data['stalled_at']=now();data['blocker']='no result '+str(STALL_HOURS)+' hours after dispatch';data['never_acked']=not acked
    state='stalled'
