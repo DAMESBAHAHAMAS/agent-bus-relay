@@ -509,6 +509,35 @@ class VerifyWording(unittest.TestCase):
    with patch.object(c,'plan_path',lambda code:__import__('pathlib').Path(tmp)/'none.json'):c.verify_ready()
    m=re.search(r'[0-9a-f]{64}',B.text);before=B.text[:m.start()]
    self.assertRegex(before,r"(?i)\b(?:commit|sha(?:-?(?:1|256))?|checksum|digest)[\s:*`'\"=]{0,6}$")
+class FailedCheckStays(unittest.TestCase):
+ """A failed independent check is final for that attempt. The old COMPLETE on the bus must not reopen it."""
+ def _bus(self,replies,verdict=None):
+  class B(Bus):
+   req=[]
+   def status(self,cid):
+    if cid.startswith('vr-'):return {'replies':[{'text':verdict}]} if verdict and cid in B.seen else None
+    return {'correlation_id':cid,'from':'claude-systems','to':'compliance','state':'acknowledged','acknowledged_by':'compliance','replies':[{'text':replies}]}
+   def verify_request(self,cid,text):B.req.append(cid)
+  B.req=[];B.seen=set();return B()
+ def test_poll_leaves_a_failed_check_blocked(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   b=self._bus('STATUS: COMPLETE');c=ctl(tmp,[base()],b)
+   row(c,state='blocked',cid='pd-abc',prefix='AB1-T1',mode='execution',requested_at=control.now(),verify_failed=control.now(),blocker='Independent check did not pass: x',bus={'acknowledged_by':'compliance'})
+   r=c.rows()[0];c.reconcile_row(r)
+   self.assertEqual(c.rows()[0]['state'],'blocked');self.assertIn('did not pass',json.loads(c.rows()[0]['data'])['blocker'])
+   c.reconcile_row(c.rows()[0]);self.assertEqual(c.rows()[0]['state'],'blocked');self.assertEqual(b.req,[])
+ def test_each_attempt_has_its_own_verifier_id(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   b=self._bus('STATUS: COMPLETE','STATUS: BLOCKED old attempt');type(b).seen={'vr-'+'a'*24}
+   c=ctl(tmp,[base()],b);row(c,state='awaiting_verification',cid='pd-'+'a'*24+'-r2',prefix='AB1-T1',mode='execution')
+   with patch.object(c,'plan_path',lambda code:__import__('pathlib').Path(tmp)/'none.json'):c.verify_ready();c.verify_ready()
+   self.assertEqual(b.req,['vr-'+'a'*24+'-r2']);self.assertEqual(c.rows()[0]['state'],'awaiting_verification')
+ def test_request_in_flight_keeps_its_old_id(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   b=self._bus('STATUS: COMPLETE','STATUS: BLOCKED real verdict');type(b).seen={'vr-'+'a'*24}
+   c=ctl(tmp,[base()],b);row(c,state='awaiting_verification',cid='pd-'+'a'*24+'-r2',prefix='AB1-T1',mode='execution',verify_requested=control.now())
+   with patch.object(c,'plan_path',lambda code:__import__('pathlib').Path(tmp)/'none.json'):c.verify_ready()
+   self.assertEqual(c.rows()[0]['state'],'blocked')
 class VerifierVerdict(unittest.TestCase):
  def test_a_failed_check_returns_to_the_blocker_flow(self):
   class B(Bus):
