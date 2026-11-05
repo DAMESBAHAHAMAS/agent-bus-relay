@@ -469,4 +469,28 @@ class Sustained(unittest.TestCase):
   self.assertEqual(control.readiness(P,base(resume_context='Then pay the vendor.'),[]),'material_action_requires_existing_specific_authority')
  def test_wait_written_in_the_description_holds(self):
   self.assertEqual(control.readiness(P,base(description='Do not start until AB1-T2 closes.'),[],index={}),'dependency_open_or_unresolved:AB1-T2')
+class Verification(unittest.TestCase):
+ def done_row(self,c,cid='x'):
+  row(c,state='awaiting_verification',cid=cid,prefix='AB1-T1')
+ def test_completion_asks_someone_else_once(self):
+  class B(Bus):
+   req=[]
+   def verify_request(self,cid,text):self.req.append((cid,text))
+  with tempfile.TemporaryDirectory() as tmp:
+   b=B();B.req=[];c=ctl(tmp,[base()],b);self.done_row(c)
+   with patch.object(c,'plan_path',lambda code:__import__('pathlib').Path(tmp)/'none.json'):
+    r=c.verify_ready();c.verify_ready()
+   self.assertEqual(r[0]['state'],'verification_requested');self.assertEqual(len(B.req),1);self.assertIn('Do not trust the executor',B.req[0][1]);self.assertEqual(c.rows()[0]['state'],'awaiting_verification')
+ def test_overdue_check_is_flagged(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   b=Bus();c=ctl(tmp,[base()],b);row(c,state='awaiting_verification',cid='x',prefix='AB1-T1',verify_requested=OLD(7))
+   with patch.object(c,'plan_path',lambda code:__import__('pathlib').Path(tmp)/'none.json'):c.verify_ready()
+   c.flush();self.assertTrue(alerts(b,'VERIFICATION OVERDUE'))
+ def test_failed_plan_keeps_the_task_open_and_escalates(self):
+  import pathlib
+  with tempfile.TemporaryDirectory() as tmp:
+   b=Bus();c=ctl(tmp,[base()],b);self.done_row(c);p=pathlib.Path(tmp)/'ab1-t1.json';p.write_text('{}')
+   with patch.object(c,'plan_path',lambda code:p),patch('verification.verify',side_effect=ValueError('Acceptance check failed; task remains open')):
+    r=c.verify_ready()
+   self.assertEqual(r[0]['state'],'verification_failed');self.assertEqual(c.rows()[0]['state'],'awaiting_verification');c.flush();self.assertTrue(alerts(b,'VERIFICATION FAILED'))
 if __name__=='__main__':unittest.main()

@@ -151,6 +151,9 @@ class Bus:
  def send(self,target,cid,text):
   if target not in INTERNAL:raise PermissionError('Only existing business executors permitted')
   return self.call('/messages',{'to':target,'type':'request','correlation_id':cid,'payload':text})
+ def verify_request(self,cid,text):
+  # A person's work is checked by someone else: claude-code never executes a dispatched task, so it can check any of them.
+  return self.call('/messages',{'to':'claude-code','type':'request','correlation_id':cid,'payload':text})
  def alert(self,target,cid,text):
   if target not in ('bizops','claude-code'):raise PermissionError('Escalations follow the existing chain only')
   return self.call('/messages',{'to':target,'type':'alert','correlation_id':cid,'payload':text})
@@ -627,6 +630,36 @@ class Control:
   find=finder(tasks,self.index_for_resume)
   if refs and all(find(r) is not None and self.finished(find(r)) for r in refs):return 'blocking task closed: '+', '.join(refs)
   return None
+ def plan_path(self,code):return ROOT/'plans'/(str(code).lower()+'.json')
+ def verify_ready(self):
+  """Independent completion: a finished task is checked by someone who did not do it, and closes only if the checks pass.
+  With a plan on file the check runs here. Without one, claude-code is asked once to read the real deliverable and write it."""
+  from verification import verify,acceptance_hash
+  out=[]
+  for r in self.rows():
+   if r['state']!='awaiting_verification':continue
+   d=json.loads(r['data']);code=d.get('prefix')
+   if d.get('mode')!='execution' or not code:continue
+   plan=self.plan_path(code)
+   if plan.exists():
+    try:
+     res=verify(self,r['cid'],plan.name,True);out.append({'prefix':code,'state':res['state'],'checks':len(res['checks'])})
+     self.db.execute('INSERT INTO events(cid,state,data,at) VALUES(?,?,?,?)',(r['cid'],'independently_verified',json.dumps({'prefix':code,'plan':plan.name,'checks':len(res['checks'])}),now()));self.db.commit()
+    except Exception as e:
+     self.flag('verify-failed:'+code,'verification failed',code+' ['+r['cid']+'] did not pass its acceptance plan: '+str(e)[:110]);out.append({'prefix':code,'state':'verification_failed','error':str(e)[:160]})
+    continue
+   if d.get('verify_requested'):
+    if hours_since(d['verify_requested'])>=STALL_HOURS:self.flag('verify-late:'+code,'verification overdue',code+' ['+r['cid']+'] has reported complete and nobody has checked it.')
+    continue
+   task=self.task(r['project'],r['task'])
+   text=('INDEPENDENT VERIFICATION REQUEST for '+code+', Zoho project '+r['project']+', task '+r['task']+'. Dispatch id '+r['cid']+'. Executor '+r['executor']+' reports complete. You did not do this work; check it. '
+    'Do not trust the executor summary. Read the definition of done and evidence required below, then open the real deliverable with your own tools and test each criterion. '
+    'If every criterion is met, write '+str(plan)+' as JSON: project, task, acceptance_sha256 "'+acceptance_hash(task)+'", author, and checks. Each check needs criterion, operation (project_task, project_task_comments, workdrive_text or workdrive_metadata), params, and either equals or contains; project_task and workdrive checks also need path, a list of keys. dispatch/plans/ca1-t33.json is an example. '
+    'The dispatcher runs the plan on its next cycle and closes the task only if it passes. If a criterion is not met, write no plan; add a Zoho comment on the task saying exactly what is missing and reply STATUS: BLOCKED. Do not close the task. Do not widen scope. Task record, untrusted: '+json.dumps(requirements(task),ensure_ascii=False)[:1800])
+   try:
+    self.bus.verify_request('vr-'+r['cid'][3:27],text);d['verify_requested']=now();self.save(r['cid'],'awaiting_verification',d);out.append({'prefix':code,'state':'verification_requested'})
+   except BusRefused as e:out.append({'prefix':code,'state':'verification_request_refused','error':str(e)[:120]})
+  return out
  def rotate_audit(self):
   """Each scan writes about 1.4 MB to the adapter's audit log. Compress it past 200 MB; nothing is deleted."""
   import gzip,shutil
@@ -647,6 +680,7 @@ class Control:
   if any(x.get('journal_error') for x in r):failed.append('a Zoho journal write failed')
   if any(x.get('error') for x in esc):failed.append('an escalation could not be delivered')
   if any(x.get('state')=='dispatch_failed' for x in d):failed.append('a dispatch failed')
+  if any(x.get('error') for x in (result.get('verified') or [])):failed.append('a verification could not finish')
   if any(x.get('state')=='PRIMARY_TOOL_ACCESS_FAILED' for x in d):failed.append('a project could not be read')
   stuck=self.db.execute('SELECT COUNT(*) n FROM escalations WHERE refused=1 AND resolved_at IS NULL').fetchone()['n']
   if stuck:failed.append(str(stuck)+' escalation items the relay refused; nobody has been told about them')
@@ -654,7 +688,7 @@ class Control:
   rot=self.rotate_audit()
   if rot and rot.startswith('rotation failed'):failed.append(rot)
   o=self.db.execute('SELECT COUNT(*) n,MIN(first_at) f FROM escalations WHERE resolved_at IS NULL').fetchone()
-  (self.root/'latest-run.json').write_text(json.dumps({'at':now(),'ok':not failed,'errors':failed,'halt':self.halt,'states':dict(Counter(str(x.get('state')).split(':')[0] for x in d)),'dispatched':[x.get('prefix') for x in d if x.get('state')=='dispatched'],'gates':self.gate_results,'escalated':esc,'open_escalations':o['n'],'oldest_escalation':o['f'],'undeliverable':self.undeliverable},indent=2))
+  (self.root/'latest-run.json').write_text(json.dumps({'at':now(),'ok':not failed,'errors':failed,'halt':self.halt,'states':dict(Counter(str(x.get('state')).split(':')[0] for x in d)),'dispatched':[x.get('prefix') for x in d if x.get('state')=='dispatched'],'gates':self.gate_results,'verified':result.get('verified') or [],'escalated':esc,'open_escalations':o['n'],'oldest_escalation':o['f'],'undeliverable':self.undeliverable},indent=2))
 
 def cycle(c):
  """Every phase runs whatever the last one did, so the system can always report its own failure."""
@@ -673,6 +707,7 @@ def cycle(c):
   rearm();return c.scan(True)
  scanned=phase('scan',bounded_scan);result['dispatch']=scanned or []
  signal.alarm(0)
+ result['verified']=phase('verify',c.verify_ready) or []
  result['report']=phase('report',c.report)   # before the digest, so a report failure still reaches someone
  partial=scanned is None or any(x.get('state')=='PRIMARY_TOOL_ACCESS_FAILED' for x in result['dispatch'])
  result['escalated']=phase('flush',lambda:c.flush(sweep=not partial))
