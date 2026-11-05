@@ -11,7 +11,8 @@ Run `python3 dispatch/control.py <command>` from this repository:
 - `reconcile`: collect actual recipient ACK/COMPLETE/BLOCKED receipts. Every state is appended to the same existing task's comments.
 - `report`: refresh `latest-report.json` from the Business calendar and execution ledger. Reports are pull-only; no routine messages to Damian.
 - `proof`: bounded read-only request on the existing pinned acceptance-test record, followed by `reconcile`. Repeating it prevents duplicate dispatch.
-- `tick`: reconcile and refresh reports without starting backlog work. Installed launchd service runs this every 15 minutes.
+- `tick`: reconcile and refresh reports without starting backlog work.
+- `run` is what launchd runs every 15 minutes: reconcile, re-read every gate, send eligible work, escalate, report, write `latest-run.json`. Every phase runs even if the one before it failed.
 - `verify --cid ID --plan task-plan.json [--close]`: independently read deliverables against a locally authored deterministic acceptance plan. Closure is separate and requires verified read-back.
 
 ## Routing and authority
@@ -20,7 +21,7 @@ Existing function metadata, then the existing named business project, determines
 
 The sender is the existing `claude-systems` integration function; Keychain resolves its existing key by reference. Recipients are limited to bizops, systems, finance, salesmkt, compliance and codedev. There is no MaryAlice recipient path and no change to her authority. MaryAlice and Business Operations remain peers under Damian; this dispatcher cannot have Business Operations direct MaryAlice. Outside agents cannot submit or approve work here.
 
-Existing API resource fences establish access, not blanket approval. The implementation recognizes `execution_approved: true` or `DISPATCH APPROVED: yes` as explicit approval signals. **These signals were not found in the scanned backlog. Their mapping to the existing authoritative approval convention is unresolved; this is not a request to re-audit the Capture Register mapping.** Do not mass-add these markers or assume Open means authorized. The user must identify the existing approval convention before unattended backlog execution starts.
+Existing API resource fences establish access, not blanket approval. The implementation recognizes `execution_approved: true` or `DISPATCH APPROVED: yes` as explicit approval signals. **Superseded 5 Nov: the only approval for unattended dispatch is Damian's baseline (`baseline()` in `control.py`). Description text cannot approve anything, because agents can write it.** **These signals were not found in the scanned backlog. Their mapping to the existing authoritative approval convention is unresolved; this is not a request to re-audit the Capture Register mapping.** Do not mass-add these markers or assume Open means authorized. The user must identify the existing approval convention before unattended backlog execution starts.
 
 Tasks need Definition of Done, Evidence Required and explicit Dependencies. Existing description fields are supported. Known WBS predecessor references must resolve uniquely within the project and be closed. Unknown native dependency structures and prose qualifiers are held, never ignored. Priorities and due dates determine scan order. The current conservative implementation holds native dependency structures for review rather than automatically resolving them. Explicitly material actions remain gated by existing authority.
 
@@ -53,3 +54,17 @@ Rollback: `python3 dispatch/service.py stop` unloads the service and archives it
 ## Verification
 
 `python3 dispatch/test_control.py` tests approval/dependency gates, external recipient rejection, duplicate prevention after uncertain delivery, ACK/COMPLETE separation and sender mismatch. See `EVIDENCE.md` for live results and remaining gaps.
+
+
+## Autonomous cycle (5 Nov 2026)
+
+Rule of the cycle: when anything is uncertain, hold the work and tell someone.
+
+- **Baseline:** High priority, Vetted, start and due dates inside `BASELINE_WINDOW`. Past the window nothing new is sent and the dispatcher says so. It never extends itself.
+- **Gates:** `gates.json` names each condition and the record that answers it. Unknown or unreadable means hold. A project description that says work is paused, with no gate registered, holds that project until someone registers or removes it.
+- **Dependencies:** `gates.analyse` reads what a task says it waits on. Task codes must be finished, ADR rows Approved, other codes and code-less waits go to a person. A task closed while its dispatch row is unverified does not count as finished.
+- **Owner-only:** `OWNER_DOES` reads what the task tells an agent to do; `OWNER_ACCEPTS` reads acceptance text for concrete actions. `cleared.json` lists task codes Damian has cleared by name. It starts empty.
+- **Capacity:** only work in progress occupies a function. No result in 6 hours is a stall. A function that never acknowledged gets nothing new for 24 hours.
+- **Resume:** only when every task it named as blocking is finished, or someone comments `[PROJECT-DISPATCH RESUME <id>]` on the task. A stall never resends by itself. Three stops goes to a person.
+- **Escalation:** one digest per run to Business Operations; unresolved after 24 hours, to `claude-code`, which GPT polls. Owner-only items stay on the dashboard and the register.
+- **Dead-man:** `latest-run.json` is read by the dashboard collector and `agent-tool-health.py`, both separate processes. Silence over 45 minutes raises an exception and a bus alert.
