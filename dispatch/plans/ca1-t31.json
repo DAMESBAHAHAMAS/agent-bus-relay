@@ -1,0 +1,40 @@
+{
+ "project": "1156860000009157037",
+ "task": "1156860000009642081",
+ "acceptance_sha256": "05b153c6258462cc34bb2a3075130aa43ed1878f4370fa07a578308342bf59a8",
+ "author": "Claude Code (Business Operations accountable), 3 Nov 2026; both statutes independently read at leg.state.fl.us",
+ "checks": [
+  {
+   "criterion": "Task is CA1-T31",
+   "operation": "project_task",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009642081"
+   },
+   "path": [
+    "prefix"
+   ],
+   "equals": "CA1-T31"
+  },
+  {
+   "criterion": "605.0112 marked against leg.state.fl.us",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009642081"
+   },
+   "path": [],
+   "contains": "0605.0112.html"
+  },
+  {
+   "criterion": "607.04021 marked, with LLC ruling",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009642081"
+   },
+   "path": [],
+   "contains": "605.01125"
+  }
+ ]
+}

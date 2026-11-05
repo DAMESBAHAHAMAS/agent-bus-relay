@@ -1,0 +1,40 @@
+{
+ "project": "1156860000009157037",
+ "task": "1156860000009641090",
+ "acceptance_sha256": "47315461f464307123da7caf23dada6d23c1a4eb77c9fc38876af966384b6ea2",
+ "author": "Claude Code (Business Operations accountable), 3 Nov 2026; both statutes independently read at leg.state.fl.us 06:3x UTC",
+ "checks": [
+  {
+   "criterion": "Task is CA1-T33",
+   "operation": "project_task",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009641090"
+   },
+   "path": [
+    "prefix"
+   ],
+   "equals": "CA1-T33"
+  },
+  {
+   "criterion": "Ruling on whether it applies to LLCs, with the correct LLC citation",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009641090"
+   },
+   "path": [],
+   "contains": "605.01125"
+  },
+  {
+   "criterion": "Current text referenced (official source link)",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009641090"
+   },
+   "path": [],
+   "contains": "0607.04021.html"
+  }
+ ]
+}
