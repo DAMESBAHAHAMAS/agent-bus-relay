@@ -19,6 +19,8 @@ INTERNAL = {'bizops','systems','finance','salesmkt','compliance','codedev'}
 ACTORS = {'Biz Operations':'bizops','SysAuto':'systems','SalesM':'salesmkt','Compliance':'compliance','Finance':'finance','Code Dev':'codedev','CodeDev':'codedev'}
 ACTOR_LABELS = {'bizops':'Biz Operations','systems':'SysAuto','salesmkt':'SalesM','compliance':'Compliance','finance':'Finance','codedev':'Code Dev'}
 HUMAN_ACTORS = {'damian','arsalan'}
+TEST_PROJECT = '1156860000009158003'
+TEST_TASK = '1156860000009398021'
 def truthy(v): return v is True or str(v).strip().lower() in ('true','1','yes')
 # Damian's baseline (2 Nov 2026, EVIDENCE-AUDIT section 8): High priority, Vetted ticked, start and due dates from 30 Oct to 8 Nov.
 # It is his to widen. Past the window nothing new is sent and the dispatcher says so; it never extends itself.
@@ -39,8 +41,11 @@ RUN_DEADLINE = 780   # seconds; launchd starts the next run at 900
 ASSIGN_LIMIT = 3
 # Owner-only work. What the task tells an agent to do is read strictly, in every word form, so "Publishing" and "payments" count.
 # Acceptance text and the description are read for concrete actions only: "the deployed version" is a fact, "publish the article" is an act.
-OWNER_DOES = re.compile(r"(?i)\b(?:pay|pays|paying|payment|payments|purchas\w*|buy|buying|spend|spending|invoice|invoicing|charge|charging|refund\w*|subscribe|subscribing|settle)\b|\$\d|\b(?:publish|publishes|publishing|deploy|deploys|deploying|launch|launches|launching|go.?live|merge to main)\b|\b(?:send|sends|sending|email|emails|emailing|e-mail|text|message|call|calling|contact|contacting|post|posting)\b[^.;]{0,40}\b(?:clients?|customers?|leads?|prospects?|vendors?|filers?|public|sms|youtube|instagram|facebook|linkedin)\b|\boutreach\b|\bcold email\b|\b(?:delete|deletes|deleting|purge|purging|trash|wipe)\b|\b(?:rotate|rotates|rotating|rotation)\b|\bcredentials?\b|\bapi keys?\b|\bpasswords?\b|\boauth\b|\bgrant\w*\b[^.;]{0,30}\baccess\b|\bauthority\b|\bsunbiz\b|\bfile the articles\b|\bss-4\b|\birs\b")
-OWNER_ACCEPTS = re.compile(r"(?i)\btest purchase\b|\blive card\b|\breal (?:order|card|customer)\b|\$\d{2,}|\b(?:send|sends|sending|email|emails)\b[^.;]{0,40}\b(?:clients?|customers?|leads?|prospects?|vendors?|filers?|sms|every)\b|\b(?:publish|publishes|deploy|deploys)\b[^.;]{0,30}\b(?:article|articles|page|pages|site|live|production|post|posts)\b|\b(?:rotate|rotating)\b|\bdelete the\b|\b(?:inbound|outbound)\b[^.;]{0,30}\b(?:calls?|sms|messages?|test)\b|\b(?:test )?calls? (?:pass|to|from)\b|\b(?:send|sends|receive)\b[^.;]{0,30}\b(?:sms|whatsapp|message)\b|\b(?:schedul\w+|upload\w*|post\w*)\b[^.;]{0,40}\b(?:youtube|instagram|facebook|linkedin|tiktok|public|live site)\b")
+OWNER_DOES = re.compile(r"(?i)\b(?:pay|pays|paying|paid|payment|payments|purchas\w*|buy|buying|bought|spend|spending|invoice|invoicing|charge|charging|refund\w*|subscribe|subscribing|settle|renew\w*|upgrade|upgrading|reimburse\w*|wire|wiring|transfer|transferring|order \d+|place an order)\b|\$\d|\b(?:publish|publishes|publishing|published|deploy|deploys|deploying|redeploy\w*|upload\w* the video|schedule[^.;]{0,30}\bposts?|launch|launches|launching|go.?live|make [^.;]{0,30}\b(?:live|public)|push\w*[^.;]{0,30}\bproduction|deployed to|merge to main|release[sd]?\b[^.;]{0,30}\b(?:youtube|site|public|production))\b|\b(?:send|sends|sending|email|emails|emailing|e-mail|text|message|call|calling|contact|contacting|post|posting|reply|replying|follow up|notify|notifying|tell|ask)\b[^.;]{0,40}\b(?:clients?|customers?|leads?|prospects?|vendors?|filers?|public|sms|youtube|instagram|facebook|linkedin|registered agent)\b|\b(?:send|book|schedule)\b[^.;]{0,40}\b(?:proposal|meeting|contact)\b|\boutreach\b|\bcold email\b|\bget rid of\b|\b(?:top up|sign up for|issue [^.;]{0,20}credit)\b|\b(?:delete|deletes|deleting|deleted|purge|purging|trash|wipe|erase|erasing|drop the|clear out|remove the [^.;]{0,30}\b(?:contacts?|records?|rows?|files?|leads?))\b|\b(?:rotate|rotates|rotating|rotation|reset|regenerate|regenerating)\b[^.;]{0,30}\b(?:token|key|secret|password|login|credential)|\bcredentials?\b|\bapi keys?\b|\bpasswords?\b|\boauth\b|\b(?:store|share|give|add)\b[^.;]{0,30}\b(?:secret|login|admin|token)\b|\bgrant\w*\b[^.;]{0,30}\baccess\b|\b(?:admin|administrator)\b[^.;]{0,20}\b(?:rights|role|access)\b|\brole to admin\b|\bas an? [^.;]{0,20}administrator\b|\bapprove its own\b|\bwiden\b[^.;]{0,30}\b(?:permission|key|scope)|\bauthority\b|\bsunbiz\b|\bfile the articles\b|\bss-4\b|\birs\b")
+OWNER_ACCEPTS = re.compile(r"(?i)\b(?:published|deleted|rotated|emailed|sent to|changed)\b[^.;]{0,30}\b(?:help center|site|crm|client|clients|customer|customers|list|lead|leads)\b|\b(?:article|page|post|video)s? (?:is|are) published\b|\b(?:leads?|records?|contacts?) (?:is|are) deleted\b|\b(?:api key|token|password|credential)s? (?:rotated|changed|reset)\b|\b(?:next|then)\b[^.;]{0,20}\b(?:pay|publish|send|deploy|delete)\b|\btest purchase\b|\blive card\b|\breal (?:order|card|customer)\b|\$\d{2,}|\b(?:pay|paid|purchase|purchased|renewed|refund|refunded|receipt|payment confirmation)\b|\b(?:send|sends|sending|email|emails)\b[^.;]{0,40}\b(?:clients?|customers?|leads?|prospects?|vendors?|filers?|sms|every)\b|\b(?:publish|publishes|published|deploy|deploys)\b[^.;]{0,30}\b(?:article|articles|page|pages|site|live|production|post|posts)\b|\b(?:rotate|rotating)\b|\bdelete the\b|\boutbound\b|\binbound\b[^.;]{0,40}\b(?:calls?|sms|messages?|test|tests|channel|channels)\b|\b(?:test )?calls? (?:pass|to|from)\b|\b(?:send|sends|receive)\b[^.;]{0,30}\b(?:sms|whatsapp|message)\b|\bhandoff test\b|\b(?:schedul\w+|upload\w*|post\w*)\b[^.;]{0,40}\b(?:youtube|instagram|facebook|linkedin|tiktok|public|live site)\b|\bposts? (?:is|are) scheduled\b|\barticles? links? to\b")
+def safe_json(x):
+ try:return json.loads(x)
+ except (TypeError,ValueError):return {'unreadable':True}
 def now(): return dt.datetime.now(dt.timezone.utc).isoformat()
 def hours_since(iso):
  """Unreadable time reads as old, so a malformed row stalls and frees its function instead of holding it for ever."""
@@ -53,7 +58,9 @@ def plain(s): return html.unescape(re.sub('<[^>]+>', '\n', s or ''))
 def field(text, label):
  m = re.search(r'(?im)^\s*'+re.escape(label)+r':\s*(.*?)(?=\n[A-Z][A-Z /_-]+:|\Z)', plain(text), re.S)
  return m.group(1).strip() if m else ''
-def closed(t): return bool(t.get('is_completed') or (t.get('status') or {}).get('is_closed_type'))
+def closed(t):
+ st=t.get('status')
+ return bool(t.get('is_completed') or (isinstance(st,dict) and st.get('is_closed_type')))
 def record(r):
  if isinstance(r,list):
   if len(r)!=1: raise ValueError('Expected exactly one record')
@@ -61,7 +68,7 @@ def record(r):
  if 'tasks' in r: return record(r['tasks'])
  return r
 def project_function(project):
- n = project.get('name','')
+ n = str(project.get('name') or '')
  return FUNCTIONS.get(n) or ('finance' if n.startswith('FIN —') else None)
 def owner(project, task):
  # The Execution Actor field names who does the work (BO2-T82). Description text is agent-writable, so it never routes work.
@@ -84,6 +91,8 @@ def readiness(project,t,tasks,index=None,held=None,register=None,finished=closed
  """The only approval for unattended dispatch is the baseline. Description text cannot approve anything: agents can write it."""
  if closed(t):return 'closed'
  if not baseline(t):return 'approval_not_explicit'
+ if t.get('status') is not None and not isinstance(t.get('status'),dict):return 'task_record_unreadable'
+ if not str(t.get('name') or '').strip():return 'task_name_missing'
  actor=str(t.get('execution_actor') or '').strip()
  if actor.lower() in HUMAN_ACTORS:return 'human_executor_required'
  # A named actor with no route is not silently handed to the project's default function.
@@ -221,7 +230,9 @@ class Control:
    self.db.execute('UPDATE runs SET cid=?,owner=?,executor=?,state=?,data=?,updated=? WHERE project=? AND task=?',(cid,fn,executor,'prepared',json.dumps(data),now(),pid,tid));self.db.commit()
   elif prior and prior['state']=='prepared':
    cid=prior['cid'];data=json.loads(prior['data']);data['requested_at']=now();data.pop('journaled',None)
-   if self.bus.status(cid):return {'cid':cid,'state':'duplicate_prevented_bus_record'}
+   if self.bus.status(cid):
+    # It may have been delivered. Never resend; poll it like any uncertain send.
+    self.save(cid,'delivery_outcome_unknown',data);return {'cid':cid,'state':'duplicate_prevented_bus_record'}
   elif prior:return {'cid':prior['cid'],'state':'duplicate_prevented'}
   else:
    self.db.execute('INSERT INTO runs VALUES(?,?,?,?,?,?,?,?)',(cid,pid,tid,fn,executor,'prepared',json.dumps(data),now()));self.db.commit()
@@ -270,6 +281,7 @@ class Control:
   cid,st=row['cid'],row['state'];data=json.loads(row['data'])
   if st=='prepared':return []
   bad=self.journal_safe(cid)   # retries any state whose comment did not land
+  if bad:self.flag('journal:'+cid,'tool failure','Zoho would not take the journal comment for '+cid+': '+bad['journal_error'][:90])
   if st not in POLLED:return [bad] if bad else []
   data=self.backfill(row,data)
   try:s=self.bus.status(cid)
@@ -277,7 +289,7 @@ class Control:
   age=hours_since(data.get('requested_at'))
   if not s:
    # /status only sees the last 100 channel messages, so a missing record after an acknowledgment means aged out, not undelivered.
-   if st not in ('blocked','stalled') and age>=STALL_HOURS:
+   if st not in ('blocked','stalled','resumable') and age>=STALL_HOURS:
     data['blocker']='bus record aged out; result not seen' if data.get('bus') else 'no bus record after '+str(STALL_HOURS)+' hours; no automatic resend after an uncertain outcome'
     data['never_acked']=not (data.get('bus') or {}).get('acknowledged_by');data['stalled_at']=now();self.save(cid,'stalled',data);self.journal_safe(cid)
     return [{'cid':cid,'state':'stalled'}]
@@ -335,8 +347,8 @@ class Control:
   report={'queue_exceptions':scan,'generated_at':now(),'notification_policy':'pull only; no routine notifications','calendar_error':calendar_error,'functions':{}}
   for fn in sorted(INTERNAL):
    names=[n.lower() for n,v in FUNCTIONS.items() if v==fn]+({'finance':['finance','financial'],'salesmkt':['sales','marketing'],'codedev':['code development']}.get(fn,[]))
-   blocks=[{k:e.get(k) for k in ('uid','title','dateandtime')} for e in events if any(n in e.get('title','').lower() for n in names)]
-   report['functions'][fn]={'scheduled_blocks':blocks,'schedule_status':'matched' if blocks else 'no_matching_business_block','work':[{'cid':r['cid'],'project':r['project'],'task':r['task'],'state':r['state'],'details':json.loads(r['data'])} for r in self.rows() if r['owner']==fn]}
+   blocks=[{k:e.get(k) for k in ('uid','title','dateandtime')} for e in events if any(n in str(e.get('title') or '').lower() for n in names)]
+   report['functions'][fn]={'scheduled_blocks':blocks,'schedule_status':'matched' if blocks else 'no_matching_business_block','work':[{'cid':r['cid'],'project':r['project'],'task':r['task'],'state':r['state'],'details':safe_json(r['data'])} for r in self.rows() if r['owner']==fn]}
   p=self.root/'latest-report.json';p.write_text(json.dumps(report,indent=2));return report
  def flag(self,key,kind,text):
   """Note something a person or Business Operations must see. Sent once, then restated up the chain."""
@@ -372,7 +384,7 @@ class Control:
    for kind,group in sorted(by.items()):
     lines.append(kind.upper()+' ('+str(len(group))+'):')
     for it in group[:12]:
-     line='- '+re.sub(r'\b[0-9a-fA-F]{32,}\b|\b\d{13,}\b','[id]',it[2])[:170]
+     line='- '+re.sub(r'(?<![-\w])[0-9a-fA-F]{32,}|\b\d{13,}\b','[id]',it[2])[:170]
      if sum(len(x)+1 for x in lines)+len(line)>3300:break
      lines.append(line);named.append(it)
    left=len(items)-len(named)
@@ -386,11 +398,13 @@ class Control:
     self.db.commit()
    try:
     try:self.bus.alert(target,cid,'\n'.join(lines));mark(named);sent.append({'target':target,'cid':cid,'items':len(named),'left':left})
-    except BusRefused:
+    except BusRefused as e:
+     if 'BUS_HTTP_429' in str(e):
+      sent.append({'target':target,'error':'relay rate limit; retrying next run','items':0,'left':len(items)});continue
      # One line the relay will not carry must not silence the rest, or be recorded as delivered.
      landed=[];refused=[]
      for n,it in enumerate(named):
-      try:self.bus.alert(target,cid+'-'+str(n),header+'\n- '+it[1].upper()+': '+re.sub(r'[0-9a-fA-F]{24,}|\d{13,}','[id]',it[2])[:170]);landed.append(it)
+      try:self.bus.alert(target,cid+'-'+str(n),header+'\n- '+it[1].upper()+': '+re.sub(r'(?<![-\w])[0-9a-fA-F]{32,}|\d{13,}','[id]',it[2])[:170]);landed.append(it)
       except BusRefused:refused.append(it)
      mark(landed+refused);self.undeliverable+=[it[2][:120] for it in refused]
      sent.append({'target':target,'cid':cid,'items':len(landed),'refused':len(refused),'left':left})
@@ -470,22 +484,21 @@ class Control:
   except Exception:cleared=set()
   for p,tasks in loaded:
    pid=str(p['id'])
-   for t in sorted(tasks,key=lambda x:({'high':0,'medium':1,'low':2}.get(x.get('priority'),3),x.get('end_date') or '9999')):
-    code=t.get('prefix') or str(t.get('id'));row=self.by_id.get(str(t['id']))
+   for t in sorted(tasks,key=lambda x:({'high':0,'medium':1,'low':2}.get(str(x.get('priority')),3),str(x.get('end_date') or '9999'))):
+    code=str(t.get('prefix') or t.get('id'));row=self.by_id.get(str(t.get('id')))
     held=next((g['id'] for g in waiting if G.covers(g,t.get('prefix'),pid)),None)
     ctx=dict(index=index,held=held,register=reg,finished=self.finished,cleared=cleared)
+    base={'project':pid,'task':t.get('id'),'prefix':code}
     if closed(t):
      if row and not self.finished(t):self.flag('closed-unverified:'+code,'closed without verification',code+' was closed while its dispatch row reads '+row['state']+'. Nothing waiting on it counts it as finished.')
      continue
-    reason=readiness(p,t,tasks,**ctx);is_base=baseline(t);fn=owner(p,t)
-    try:self.note(code,t,reason,row,index,tasks)
-    except Exception as e:out.append({'prefix':code,'state':'note_failed','error':str(e)[:120]})
-    if not is_base and truthy(t.get('vetted')):self.flag('drift:'+code,'baseline drift',code+' is ticked Vetted but no longer meets the baseline rule (dates or priority).')
-    base={'project':pid,'task':t['id'],'prefix':code}
     try:
+     reason=readiness(p,t,tasks,**ctx);is_base=baseline(t);fn=owner(p,t)
+     self.note(code,t,reason,row,index,tasks)
+     if not is_base and truthy(t.get('vetted')):self.flag('drift:'+code,'baseline drift',code+' is ticked Vetted but no longer meets the baseline rule (dates or priority).')
      waive=bool(row) and row['state']=='resumable' and json.loads(row['data']).get('resume_reason')=='resumed by comment'
      if row and row['state'] in ('blocked','stalled') and is_base:
-      why=self.resume_reason(row,t,reason)
+      why=self.resume_reason(row,t,reason,tasks)
       if why:
        if not execute:out.append(dict(base,state='would_resume',why=why));continue
        data=json.loads(row['data']);data['resume_reason']=why;self.save(row['cid'],'resumable',data);self.by_id=dict(self.by_id,**{r['task']:r for r in self.rows()});row=self.by_id[str(t['id'])];waive=why=='resumed by comment'
@@ -526,7 +539,8 @@ class Control:
      if res.get('state')=='refused':stop='refused'
     except Exception as e:
      # One task failing must not stop the rest of the run or its escalations.
-     out.append(dict(base,state='dispatch_failed',error=str(e)[:160]));self.flag('failed:'+code,'tool failure',code+' could not be processed: '+str(e)[:110]);stop=stop or 'failed'
+     out.append(dict(base,state='dispatch_failed',error=str(e)[:160]));self.flag('failed:'+code,'tool failure',code+' could not be processed: '+str(e)[:110])
+     if isinstance(e,(OSError,RuntimeError)):stop=stop or 'failed'   # a bad record must not stop the good ones; a bad connection must
   for r in self.rows():
    if r['task'] not in ids and r['state'] in POLLED+('awaiting_verification',):self.flag('unseen:'+r['cid'],'task not readable','dispatch '+r['cid']+' reads '+r['state']+' but its task was not in this read.')
   (self.root/'latest-scan.json').write_text(json.dumps(out,indent=2));return out
@@ -595,18 +609,16 @@ class Control:
   mark='[PROJECT-DISPATCH RESUME '+row['cid']+']'
   # Must open the comment. The dispatcher's own journal quotes agent text, so a mark inside one proves nothing.
   return any(plain(x.get('content') or x.get('comment') or '').strip().startswith(mark) for x in (r if isinstance(r,list) else r.get('comments',[])))
- def resume_reason(self,row,t,reason):
+ def resume_reason(self,row,t,reason,tasks=()):
   """Why a stopped task may go again. Only a named dependency closing or a deliberate resume counts."""
   data=json.loads(row['data'])
-  if 'wait_snapshot' not in data:
-   data['wait_snapshot']=G.analyse(t)['tasks'];self.save(row['cid'],row['state'],data)
   if reason not in ('ready','dependency_stated_without_code'):return None
   if self.resume_marker(row):return 'resumed by comment'   # a person's word outranks the attempt limit
   if int(data.get('attempt') or 1)>=MAX_ATTEMPTS:
    self.flag('stuck:'+str(t.get('prefix')),'blocked repeatedly',str(t.get('prefix'))+' ['+row['cid']+'] has stopped '+str(MAX_ATTEMPTS)+' times. Only a RESUME comment sends it again.');return None
   if row['state']!='blocked' or reason!='ready':return None   # a stall may have been delivered, so it never resends by itself
-  refs=list(dict.fromkeys((data.get('blocked_on') or [])+(data.get('wait_snapshot') or [])))
-  find=finder([],self.index_for_resume)
+  refs=data.get('blocked_on') or []   # empty unless the agent's whole wait was finished-able task codes
+  find=finder(tasks,self.index_for_resume)
   if refs and all(find(r) is not None and self.finished(find(r)) for r in refs):return 'blocking task closed: '+', '.join(refs)
   return None
  def rotate_audit(self):
@@ -629,6 +641,8 @@ class Control:
   if any(x.get('journal_error') for x in r):failed.append('a Zoho journal write failed')
   if any(x.get('error') for x in esc):failed.append('an escalation could not be delivered')
   if any(x.get('state')=='dispatch_failed' for x in d):failed.append('a dispatch failed')
+  if any(x.get('state')=='PRIMARY_TOOL_ACCESS_FAILED' for x in d):failed.append('a project could not be read')
+  if self.undeliverable:failed.append(str(len(self.undeliverable))+' escalation items the relay refused')
   rot=self.rotate_audit()
   if rot and rot.startswith('rotation failed'):failed.append(rot)
   o=self.db.execute('SELECT COUNT(*) n,MIN(first_at) f FROM escalations WHERE resolved_at IS NULL').fetchone()
@@ -641,12 +655,16 @@ def cycle(c):
   try:return fn()
   except (Exception,RunDeadline) as e:
    result['errors'].append(name+': '+(str(e)[:200] or type(e).__name__));c.flag('phase:'+name,'tool failure','The dispatcher phase '+name+' failed: '+str(e)[:120]);return None
+ start=time.time()
+ def rearm():
+  # An alarm fires once. Re-arm it so a slow scan after a slow reconcile is still bounded.
+  if signal.getsignal(signal.SIGALRM) is on_deadline:signal.alarm(max(30,int(RUN_DEADLINE-(time.time()-start))))
  result['receipts']=phase('reconcile',c.reconcile) or []
- scanned=phase('scan',lambda:c.scan(True));result['dispatch']=scanned or []
+ rearm();scanned=phase('scan',lambda:c.scan(True));result['dispatch']=scanned or []
  signal.alarm(0)
+ result['report']=phase('report',c.report)   # before the digest, so a report failure still reaches someone
  partial=scanned is None or any(x.get('state')=='PRIMARY_TOOL_ACCESS_FAILED' for x in result['dispatch'])
  result['escalated']=phase('flush',lambda:c.flush(sweep=not partial))
- result['report']=phase('report',c.report)
  c.heartbeat(result)
  return result
 def on_deadline(*_):raise RunDeadline('run passed its '+str(RUN_DEADLINE)+' second deadline')

@@ -17,16 +17,18 @@ _LIST=re.compile(r'(?<![A-Za-z0-9-])([A-Z][A-Z0-9]{1,4}-T)(\d+)((?:\s*(?:,|and|&
 # Waiting words that need a code nearby to mean anything.
 _SOFT=r'until|after|once|following|requires?|needs?|before'
 # Words that say the task cannot proceed, with or without a code.
-_HARD=r'blocked by|blocked:|blocked until|blocked\b|depends? on|dependent on|dependency:|waits? on|waits? for|waiting on|waiting for|awaiting|only after|hold until|held until|(?:is|are|stays?|remains?|kept)\s+(?:on hold|paused|parked|held)|do not start|cannot start|can\'t start|start only|must (?:close|finish|happen|land|pass|complete) first|is still open|are still open|predecessor'
+_HARD=r'contingent on|subject to|prerequisites?\b|deferred until|deferred to|pending\b|paused|parked until|parked pending|held until|held pending|blocked by|blocked:|blocked until|blocked\b|depends? on|dependent on|dependency:|waits? on|waits? for|waiting on|waiting for|awaiting|only after|hold until|held until|(?:is|are|stays?|remains?|kept)\s+(?:on hold|paused|parked|held)|do not start|cannot start|can\'t start|start only|must (?:close|finish|happen|land|pass|complete) first|is still open|are still open|predecessor'
 _WAIT=re.compile(r'(?i)(?<![A-Za-z])(?:'+_HARD+'|'+_SOFT+r')(?![A-Za-z])')
 _HARDONLY=re.compile(r'(?i)(?<![A-Za-z])(?:'+_HARD+r')(?![A-Za-z])')
 _NEG=re.compile(r"(?i)\b(?:no longer|not|does not|doesn't|never|no)\s+(?:\w+\s+)?(?:blocked|block|wait|waits|waiting|depend|depends|dependent|held|hold|parked|paused)\b|\b(?:was|were|been)\s+(?:lifted|cleared|resolved|removed)\b|\brelated(?:\s+to)?\b|\bdepends? on:?\s*none\b|\bdependenc(?:y|ies):?\s*none\b|\bno dependenc")
 # Text that names the next step for someone else, not something this task waits for.
-_SUCCESSOR=re.compile(r'(?i)(?:,\s*so\s+[^.;]*\b(?:cannot|can)\b[^.;]*[.;]?\s*$|^\s*(?:gates?|feeds?)\b[^.;]*[.;]?\s*$|\b(?:gate for|blocks|unblocks|then (?:tell|start|run)|tell|so that|supports?)\b[^.;]*[.;]?\s*$)')
+_SUCCESSOR=re.compile(r'(?i)(?:,\s*so\s+[^.;]*\b(?:cannot|can)\b[^.;]*[.;]?\s*$|^\s*(?:gates?|feeds?)\b[^.;]*[.;]?\s*$|\b(?:gate for|blocks|unblocks|then (?:tell|start|run)|so that)\b[^.;]*[.;]?\s*$)')
 _PROSE=re.compile(r'(?i)(?<![A-Za-z])(?:paused?|on hold|parked|parking|held|hold|deferred|defer|frozen|freeze|blocked|waiting|awaiting|suspended|gated|do not start|start only|not started)(?![A-Za-z])[^.;]{0,90}(?<![A-Za-z])(?:until|after|pending|once|unless|before|when|for)(?![A-Za-z])')
 _ROUTINE=re.compile(r'(?i)\b(?:held after|on hold for review)\b')
 def clean(t):return html.unescape(re.sub(r'\s+',' ',re.sub('<[^>]+>',' ',str(t or '')))).strip()
-def text_of(t):return ' '.join(clean(t.get(k)) for k in ('resume_context','next_activity'))
+def text_of(t):
+ notes=re.findall(r'(?im)^\s*(?:note|notes|waiting|blocked|hold)\b.*$',html.unescape(re.sub('<[^>]+>','\n',str(t.get('description') or ''))))
+ return ' '.join([clean(t.get(k)) for k in ('resume_context','next_activity')]+[x.strip().rstrip('.')+'.' for x in notes])
 def expand(s):
  """Every code in a sentence. CA1-T37, T38 and T39 is three tasks; A6Y2-T77 to A6Y2-T80 is four."""
  out=[]
@@ -59,7 +61,7 @@ def block_refs(text,own=None):
  a reply that also needs an owner decision or names something else must not resume itself when a task closes."""
  m=list(re.finditer(r'STATUS:\s*BLOCKED',text or ''))
  tail=(text or '')[m[-1].start():] if m else (text or '')
- got=analyse({'prefix':own,'resume_context':clean(tail)})
+ got=analyse({'prefix':own,'resume_context':re.sub(r'STATUS:\s*BLOCKED\W*(?:\(\w+\))?\W*','',clean(tail),count=1)})
  if got['others'] or got['unclear']:return []
  return got['tasks']
 def prose_gates(text):
