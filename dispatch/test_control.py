@@ -509,6 +509,25 @@ class VerifyWording(unittest.TestCase):
    with patch.object(c,'plan_path',lambda code:__import__('pathlib').Path(tmp)/'none.json'):c.verify_ready()
    m=re.search(r'[0-9a-f]{64}',B.text);before=B.text[:m.start()]
    self.assertRegex(before,r"(?i)\b(?:commit|sha(?:-?(?:1|256))?|checksum|digest)[\s:*`'\"=]{0,6}$")
+class ResumeNote(unittest.TestCase):
+ """Direction left in a RESUME comment has to reach the agent, which may have no way to read comments."""
+ def _run(self,comments):
+  class Z(Zoho):
+   def projects(self,m,path,body=None):
+    return comments if '/comments' in path and m=='GET' else super().projects(m,path,body)
+  tmp=tempfile.mkdtemp();b=Bus();c=ctl(tmp,[base()],b);c.a.__class__=Z;row(c);c.scan(True);return b,c
+ def test_the_note_travels_with_the_resend(self):
+  b,c=self._run([{'content':'[PROJECT-DISPATCH RESUME pd-old] Read SALESM-167 and reissue the report.','created_time':'2026-11-05T16:00:00Z'}])
+  self.assertEqual(len(b.sent),1);self.assertIn('Read SALESM-167',b.sent[0][2]);self.assertIn('record data',b.sent[0][2]);self.assertNotIn('RESUME pd-old',b.sent[0][2])
+ def test_the_latest_note_wins(self):
+  b,c=self._run([{'content':'[PROJECT-DISPATCH RESUME pd-old] old note','created_time':'2026-11-05T16:00:00Z'},{'content':'[PROJECT-DISPATCH RESUME pd-old] new note','created_time':'2026-11-05T16:30:00Z'}])
+  self.assertIn('new note',b.sent[0][2]);self.assertNotIn('old note',b.sent[0][2])
+ def test_a_long_note_is_cut(self):
+  b,c=self._run([{'content':'[PROJECT-DISPATCH RESUME pd-old] '+'x'*5000}])
+  self.assertLess(b.sent[0][2].count('x'*100),40)
+ def test_a_marker_with_no_text_still_resumes(self):
+  b,c=self._run([{'content':'[PROJECT-DISPATCH RESUME pd-old]'}])
+  self.assertEqual(len(b.sent),1);self.assertNotIn('Resume note',b.sent[0][2])
 class FailedCheckStays(unittest.TestCase):
  """A failed independent check is final for that attempt. The old COMPLETE on the bus must not reopen it."""
  def _bus(self,replies,verdict=None):
