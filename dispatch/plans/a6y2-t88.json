@@ -1,0 +1,106 @@
+{
+ "project": "1156860000009530061",
+ "task": "1156860000009664009",
+ "acceptance_sha256": "21942a717fb95b67b7e18d96d3363f8a6de12b1c0f2d84f579b4d8e75be20e77",
+ "author": "Claude Code, 5 Nov 2026, after an independent read that recounted click depth from the CSV for all 97 pages and matched every page, and re-rendered the 404 and no-link findings",
+ "checks": [
+  {
+   "criterion": "Task is A6Y2-T88",
+   "operation": "project_task",
+   "params": {
+    "project_id": "1156860000009530061",
+    "task_id": "1156860000009664009"
+   },
+   "path": [
+    "prefix"
+   ],
+   "equals": "A6Y2-T88"
+  },
+  {
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevw33b537537b2b463397b4692343673c3c"
+   },
+   "criterion": "Map is the file reported",
+   "path": [
+    "sha256"
+   ],
+   "equals": "31335801a8aff734a756875dbc82ee0dbf6df4d8f231196ef46949b991380d36"
+  },
+  {
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevw1f90f3c29e334d71a7422aff7ea5c1bc"
+   },
+   "criterion": "Crawl export is the file reported",
+   "path": [
+    "sha256"
+   ],
+   "equals": "6aa17d8c37a93c509bfc7017d091d6f1702302dfcc739dbc986e2ce791f9dd0a"
+  },
+  {
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevw1f90f3c29e334d71a7422aff7ea5c1bc"
+   },
+   "criterion": "Export carries source, anchor, target, status and redirect chain",
+   "path": [
+    "content"
+   ],
+   "contains": "source_url,anchor,target_url,link_type,http_status,rendered_result,redirect_chain"
+  },
+  {
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevw7302e75cdf954ad2bb3d422271a339b3"
+   },
+   "criterion": "Graph is the file reported",
+   "path": [
+    "sha256"
+   ],
+   "equals": "94fc2d25e3a1a93ba4f771b5a120041579c28f700f6adeaf4681cc1a2c280e13"
+  },
+  {
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevw7302e75cdf954ad2bb3d422271a339b3"
+   },
+   "criterion": "Directed page graph with inbound and outbound counts",
+   "path": [
+    "content"
+   ],
+   "contains": "click_depth_from_home,shortest_click_path,inbound_pages,outbound_pages"
+  },
+  {
+   "operation": "workdrive_text",
+   "params": {
+    "resource_id": "hxevw33b537537b2b463397b4692343673c3c"
+   },
+   "criterion": "Map identifies unreachable pages",
+   "path": [
+    "content"
+   ],
+   "contains": "unreachable"
+  },
+  {
+   "criterion": "Task comments link the map",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009530061",
+    "task_id": "1156860000009664009"
+   },
+   "path": [],
+   "contains": "hxevw33b537537b2b463397b4692343673c3c"
+  },
+  {
+   "criterion": "Task comments link the crawl export",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009530061",
+    "task_id": "1156860000009664009"
+   },
+   "path": [],
+   "contains": "hxevw1f90f3c29e334d71a7422aff7ea5c1bc"
+  }
+ ]
+}
