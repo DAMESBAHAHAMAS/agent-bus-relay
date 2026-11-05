@@ -509,4 +509,21 @@ class VerifyWording(unittest.TestCase):
    with patch.object(c,'plan_path',lambda code:__import__('pathlib').Path(tmp)/'none.json'):c.verify_ready()
    m=re.search(r'[0-9a-f]{64}',B.text);before=B.text[:m.start()]
    self.assertRegex(before,r"(?i)\b(?:commit|sha(?:-?(?:1|256))?|checksum|digest)[\s:*`'\"=]{0,6}$")
+class VerifierVerdict(unittest.TestCase):
+ def test_a_failed_check_returns_to_the_blocker_flow(self):
+  class B(Bus):
+   def status(self,cid):return {'replies':[{'text':'STATUS: BLOCKED Provider accounts were never audited.'}]} if cid.startswith('vr-') else None
+  with tempfile.TemporaryDirectory() as tmp:
+   b=B();c=ctl(tmp,[base()],b);row(c,state='awaiting_verification',cid='pd-abc',prefix='AB1-T1',verify_requested=control.now())
+   with patch.object(c,'plan_path',lambda code:__import__('pathlib').Path(tmp)/'none.json'):r=c.verify_ready()
+   self.assertEqual(r[0]['state'],'verification_did_not_pass');x=c.rows()[0];self.assertEqual(x['state'],'blocked');self.assertIn('Provider accounts',json.loads(x['data'])['blocker'])
+   c.scan(True);c.flush();self.assertTrue(alerts(b,'BLOCKED'))
+ def test_the_verifier_gets_a_read_only_packet(self):
+  class B(Bus):
+   text=''
+   def verify_request(self,cid,text):B.text=text
+  with tempfile.TemporaryDirectory() as tmp:
+   c=ctl(tmp,[base()],B());row(c,state='awaiting_verification',cid='x',prefix='AB1-T1')
+   with patch.object(c,'plan_path',lambda code:__import__('pathlib').Path(tmp)/'none.json'):c.verify_ready()
+   self.assertTrue((c.root/'verify'/'ab1-t1.json').exists());self.assertIn('read that instead of Zoho',B.text)
 if __name__=='__main__':unittest.main()
