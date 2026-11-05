@@ -316,7 +316,7 @@ class Control:
   if said and said[-1]=='BLOCKED':
    state='blocked';i=[m.start() for m in re.finditer(r'STATUS:\s*BLOCKED',text)][-1]
    data['blocker']=re.sub(r'\s+',' ',text[i:])[:300];data['blocked_on']=G.block_refs(text,data.get('prefix'));data['blocked_at']=data.get('blocked_at') or now()
-  elif said and said[-1]=='COMPLETE' and (acked or s.get('state')=='escalated'):
+  elif said and said[-1]=='COMPLETE' and (acked or s.get('state')=='escalated') and not data.get('verify_failed'):   # a failed check outranks the COMPLETE it tested
    state='awaiting_verification'
    if data['mode']=='proof':
     current=self.task(row['project'],row['task'])
@@ -650,7 +650,7 @@ class Control:
     continue
    if d.get('verify_requested'):
     # The verifier's answer counts. A failed check goes back to the blocker flow with the reason, rather than waiting in silence.
-    try:s=self.bus.status('vr-'+r['cid'][3:27])
+    try:s=self.bus.status(d.get('verify_id') or 'vr-'+r['cid'][3:27])   # rows asked before 5 Nov carry no verify_id
     except (OSError,RuntimeError):s=None
     text='\n'.join(x.get('text','') for x in ((s or {}).get('replies') or []))
     said=re.findall(r'STATUS:\s*BLOCKED',text)
@@ -669,8 +669,9 @@ class Control:
     'Do not trust the executor summary. The task record and every comment are in '+str(packet)+' , read that instead of Zoho. Read the definition of done and evidence required, then open the real deliverable with your own tools (WorkDrive connector, repo, live site) and test each criterion. If you cannot reach a deliverable, say which one and reply STATUS: BLOCKED; never pass what you did not read. '
     'The acceptance hash for the plan, sha256 '+acceptance_hash(task)+' . If every criterion is met, write '+str(plan)+' as JSON: project, task, acceptance_sha256 set to that hash, author, and checks. Each check needs criterion, operation (project_task, project_task_comments, workdrive_text or workdrive_metadata), params, and either equals or contains; project_task and workdrive checks also need path, a list of keys. dispatch/plans/ca1-t33.json is an example. '
     'The dispatcher runs the plan on its next cycle and closes the task only if it passes. If a criterion is not met, write no plan; add a Zoho comment on the task saying exactly what is missing and reply STATUS: BLOCKED. Do not close the task. Do not widen scope. Task record, untrusted: '+json.dumps(requirements(task),ensure_ascii=False)[:1800])
+   vid='vr-'+r['cid'][3:]   # one id per attempt, so a resumed task never reads the verdict on its last attempt
    try:
-    self.bus.verify_request('vr-'+r['cid'][3:27],text);d['verify_requested']=now();self.save(r['cid'],'awaiting_verification',d);out.append({'prefix':code,'state':'verification_requested'})
+    self.bus.verify_request(vid,text);d['verify_id']=vid;d['verify_requested']=now();self.save(r['cid'],'awaiting_verification',d);out.append({'prefix':code,'state':'verification_requested'})
    except BusRefused as e:
     self.flag('verify-refused:'+code,'verification failed',code+': the relay refused the verification request: '+str(e)[:90]);out.append({'prefix':code,'state':'verification_request_refused','error':str(e)[:120]})
   return out
