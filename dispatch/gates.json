@@ -1,0 +1,23 @@
+[
+ {
+  "id": "master-handoff-accepted",
+  "condition": {"type": "task_closed", "prefix": "BO2-T68"},
+  "evidence": "Damian accepted 29 Oct and stated COMPLETE and CLOSED 30 Oct 23:23 EDT, Cliq 1793417029220_371782853643. BO2-T68 is the acceptance record.",
+  "holds": {"projects": ["1156860000009635003"], "tasks": ["BO2-T51","BO2-T52","BO2-T53","BO2-T54","BO2-T55","BO2-T56","BO2-T57"]},
+  "on_clear": "Mary-Alice work runs under SA5-T158 to T164, which are in the baseline. BO2-T51 to T57 (Operational Monitoring) are not vetted, so they start only if Damian ticks them."
+ },
+ {
+  "id": "restore-target-named",
+  "condition": {"type": "register_status", "adr": "ADR-246", "statuses": ["Approved", "Verified", "Closed"]},
+  "evidence": "The post-cutover restore tests have no date or trigger on record. Damian names the target under ADR-246.",
+  "holds": {"tasks": ["BO2-T89","BO2-T90","BO2-T91"]},
+  "on_clear": "Systems and Automation schedules the restore on the named macOS user or machine."
+ },
+ {
+  "id": "booking-platform-parked",
+  "condition": {"type": "register_status", "adr": "ADR-123", "statuses": ["Approved", "Verified", "Closed"]},
+  "evidence": "Project parked outside the 28 Oct scope, BO2-T85 reconciliation. Damian answers ADR-123 to restart it.",
+  "holds": {"projects": ["1156860000009303132"]},
+  "on_clear": "Business Operations re-reads DK-158 and proposes which tasks to vet."
+ }
+]
