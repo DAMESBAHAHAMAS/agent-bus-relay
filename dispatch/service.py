@@ -16,7 +16,7 @@ def main():
    TARGET.write_bytes(plistlib.dumps(expected));TARGET.chmod(0o600)
   probe=subprocess.run(['launchctl','print',domain+'/'+LABEL],capture_output=True)
   if probe.returncode:subprocess.run(['launchctl','bootstrap',domain,str(TARGET)],check=True)
-  print('Installed receipt/report refresh every 15 minutes. No backlog auto-dispatch or notifications.')
+  print('Installed: run sends baseline work every 15 minutes.')
  elif mode=='stop':
   if TARGET.exists():
    existing=plistlib.loads(TARGET.read_bytes())

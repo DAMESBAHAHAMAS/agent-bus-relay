@@ -22,7 +22,7 @@ _WAIT=re.compile(r'(?i)(?<![A-Za-z])(?:'+_HARD+'|'+_SOFT+r')(?![A-Za-z])')
 _HARDONLY=re.compile(r'(?i)(?<![A-Za-z])(?:'+_HARD+r')(?![A-Za-z])')
 _NEG=re.compile(r"(?i)\b(?:no longer|not|does not|doesn't|never|no)\s+(?:\w+\s+)?(?:blocked|block|wait|waits|waiting|depend|depends|dependent|held|hold|parked|paused)\b|\b(?:was|were|been)\s+(?:lifted|cleared|resolved|removed)\b|\brelated(?:\s+to)?\b|\bdepends? on:?\s*none\b|\bdependenc(?:y|ies):?\s*none\b|\bno dependenc")
 # Text that names the next step for someone else, not something this task waits for.
-_SUCCESSOR=re.compile(r'(?i)(?:,\s*so\s+[^.;]*\b(?:cannot|can)\b[^.;]*[.;]?\s*$|\b(?:gates?|gate for|feeds?|blocks|unblocks|then (?:tell|start|run)|tell|so that|supports?)\b[^.;]*[.;]?\s*$)')
+_SUCCESSOR=re.compile(r'(?i)(?:,\s*so\s+[^.;]*\b(?:cannot|can)\b[^.;]*[.;]?\s*$|^\s*(?:gates?|feeds?)\b[^.;]*[.;]?\s*$|\b(?:gate for|blocks|unblocks|then (?:tell|start|run)|tell|so that|supports?)\b[^.;]*[.;]?\s*$)')
 _PROSE=re.compile(r'(?i)(?<![A-Za-z])(?:paused?|on hold|parked|parking|held|hold|deferred|defer|frozen|freeze|blocked|waiting|awaiting|suspended|gated|do not start|start only|not started)(?![A-Za-z])[^.;]{0,90}(?<![A-Za-z])(?:until|after|pending|once|unless|before|when|for)(?![A-Za-z])')
 _ROUTINE=re.compile(r'(?i)\b(?:held after|on hold for review)\b')
 def clean(t):return html.unescape(re.sub(r'\s+',' ',re.sub('<[^>]+>',' ',str(t or '')))).strip()
@@ -37,29 +37,31 @@ def expand(s):
   out.append(m.group(1)+m.group(2));out+=[m.group(1)+n for n in re.findall(r'\d+',m.group(3))]
  out+=_ANY.findall(s)
  return list(dict.fromkeys(out))
-def sentences(text):return [x.strip() for x in re.split(r'(?<=[.;])\s+(?=[A-Z(])',text) if x.strip()]
+def sentences(text):return [x.strip() for x in re.split(r'(?<=[.;])\s+(?=[A-Z0-9(])',text) if x.strip()]
+def _clause(s):
+ """Drop only the negated clause: "Not blocked by legal, but waiting on SA5-T9" still waits on SA5-T9."""
+ return re.sub(_NEG.pattern+r'[^,;]*','',s,flags=re.I)
 def analyse(t):
  """What a task says it waits on: resolvable task codes, other record codes, and waits with no code at all."""
  own=t.get('prefix');tasks=[];others=[];unclear=[]
  for s in sentences(text_of(t)):
   # "Blocked 3 Nov (dispatch pd-...)" records a block the ledger already holds; the resume rules decide that one.
-  if _NEG.search(s) or not _WAIT.search(s) or '(dispatch pd-' in s:continue
-  kept=_SUCCESSOR.sub('',s)
+  if '(dispatch pd-' in s:continue
+  kept=_SUCCESSOR.sub('',_clause(s))
   codes=[c for c in expand(kept) if c!=own]
   if not _WAIT.search(kept):continue
   if codes:
    for c in codes:(tasks if re.fullmatch(TASK,c) else others).append(c)
   elif _HARDONLY.search(kept):unclear.append(kept[:160])
  return {'tasks':list(dict.fromkeys(tasks)),'others':list(dict.fromkeys(others)),'unclear':unclear}
-def block_refs(text):
- """Task codes a BLOCKED reply says it waits on, from the BLOCKED line onward. A code merely mentioned does not count."""
+def block_refs(text,own=None):
+ """Task codes a BLOCKED reply waits on, from the last BLOCKED line onward. Empty unless the whole wait is task codes:
+ a reply that also needs an owner decision or names something else must not resume itself when a task closes."""
  m=list(re.finditer(r'STATUS:\s*BLOCKED',text or ''))
  tail=(text or '')[m[-1].start():] if m else (text or '')
- refs=[]
- for s in sentences(clean(tail)):
-  if _NEG.search(s) or not _WAIT.search(s):continue
-  refs+=[c for c in expand(_SUCCESSOR.sub('',s)) if re.fullmatch(TASK,c)]
- return list(dict.fromkeys(refs))
+ got=analyse({'prefix':own,'resume_context':clean(tail)})
+ if got['others'] or got['unclear']:return []
+ return got['tasks']
 def prose_gates(text):
  """Sentences that hold work on a condition. Used to catch a gate nobody registered."""
  return [x[:200] for x in sentences(clean(text)) if _PROSE.search(x) and not _ROUTINE.search(x)]

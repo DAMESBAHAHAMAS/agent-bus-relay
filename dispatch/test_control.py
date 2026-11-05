@@ -279,7 +279,8 @@ class Lifecycle(unittest.TestCase):
   with tempfile.TemporaryDirectory() as tmp:
    b=Bus();t=base();c=ctl(tmp,[t],b);c.a.__class__=Z;row(c);c.scan(True);self.assertEqual(b.sent,[])
    Z.comments=[{'content':'[PROJECT-DISPATCH RESUME pd-old] cleared'}];c.scan(True);self.assertEqual(len(b.sent),1)
-   c.db.execute('UPDATE runs SET state=?,cid=?,data=?',('blocked','pd-old',json.dumps({'mode':'execution','attempt':3,'task_name':'x','blocked_on':[],'wait_snapshot':[],'requested_at':control.now()})));c.db.commit();c.seen=set();c.scan(True);c.flush();self.assertEqual(len(b.sent),1);self.assertTrue(alerts(b,'BLOCKED REPEATEDLY'))
+   Z.comments=[];c.db.execute('UPDATE runs SET state=?,cid=?,data=?',('blocked','pd-old',json.dumps({'mode':'execution','attempt':3,'task_name':'x','blocked_on':[],'wait_snapshot':[],'requested_at':control.now()})));c.db.commit();c.seen=set();c.scan(True);c.flush();self.assertEqual(len(b.sent),1);self.assertTrue(alerts(b,'BLOCKED REPEATEDLY'))
+   Z.comments=[{'content':'[PROJECT-DISPATCH RESUME pd-old] a person says go'}];c.scan(True);self.assertEqual(len(b.sent),2)   # a person's word outranks the limit
  def test_stall_never_resends_by_itself(self):
   dep=base(id='d',prefix='AB1-T2',name='prereq',execution_actor='Damian',status={'is_closed_type':True});t=base(id='t')
   with tempfile.TemporaryDirectory() as tmp:
@@ -307,7 +308,7 @@ class Lifecycle(unittest.TestCase):
     return super().send(to,cid,text)
   a,d=base(id='a',prefix='AB1-T1'),base(id='b',prefix='AB1-T2',execution_actor='Finance')
   with tempfile.TemporaryDirectory() as tmp:
-   b=B();c=ctl(tmp,[a,d],b);out=c.scan(True);self.assertEqual(sorted(x['state'] for x in out),['dispatch_failed','dispatched']);self.assertEqual(json.loads(c.rows()[0]['data'])['attempt'],1)
+   b=B();c=ctl(tmp,[a,d],b);out=c.scan(True);self.assertEqual(sorted(x['state'] for x in out),['dispatch_failed','held_after_send_failure']);self.assertEqual(json.loads(c.rows()[0]['data'])['attempt'],1)
  def test_run_limit(self):
   ts=[base(id=str(i),prefix='AB1-T'+str(i),execution_actor=a) for i,a in enumerate(['Compliance','Finance','SalesM','SysAuto','Biz Operations','Code Dev'])]
   with tempfile.TemporaryDirectory() as tmp:
@@ -349,7 +350,95 @@ class Unattended(unittest.TestCase):
     if 'AB1-T1' in text:raise control.BusRefused('BUS_HTTP_422')
     return super().alert(to,cid,text)
   with tempfile.TemporaryDirectory() as tmp:
-   b=B();c=ctl(tmp,[base(execution_actor='Damian')],b);c.scan(True);c.flush();self.assertEqual(len(b.alerts),1);self.assertIn('refused the detail',b.alerts[0][2]);c.seen=set();c.scan(True);c.flush();self.assertEqual(len(b.alerts),1)
+   b=B();ts=[base(id='a',execution_actor='Damian'),base(id='b',prefix='AB1-T2',execution_actor='Damian')];c=ctl(tmp,ts,b);c.scan(True);c.flush();self.assertEqual(len(b.alerts),1);self.assertIn('AB1-T2',b.alerts[0][2]);self.assertEqual(len(c.undeliverable),1);c.seen=set();c.scan(True);c.flush();self.assertEqual(len(b.alerts),1)
  def test_bad_time_reads_as_old(self):
   self.assertEqual(control.hours_since('garbage'),float('inf'));self.assertGreater(control.hours_since('2026-10-01T10:00:00'),24)
+class Blockers(unittest.TestCase):
+ """One regression per confirmed activation blocker from the second review."""
+ def test_refused_send_retries_through_the_real_journal(self):
+  class Z(Zoho):
+   store=[]
+   def projects(self,m,path,body=None):
+    if '/comments' in path:
+     if m=='POST':self.store.append({'content':body['comment']});return {}
+     return self.store if 'page=1&' in path or 'page=' not in path else []
+    return super().projects(m,path,body)
+  class B(Bus):
+   refuse=True
+   def send(self,to,cid,text):
+    if self.refuse:raise control.BusRefused('BUS_HTTP_429')
+    return super().send(to,cid,text)
+  with tempfile.TemporaryDirectory() as tmp:
+   import pathlib
+   Z.store=[];z=Z([base()]);b=B();c=control.Control(tmp,adapter=z,bus=b);c.projects=lambda:[{'id':'1','name':'Compliance and Filings'}];p=pathlib.Path(tmp)/'gates.json';p.write_text('[]');c.gates_path=str(p);c.register=lambda:{}
+   self.assertEqual(c.scan(True)[0]['state'],'refused');b.refuse=False
+   d=json.loads(c.rows()[0]['data']);d['retry_after']=OLD(1);c.db.execute('UPDATE runs SET data=?',(json.dumps(d),));c.db.commit()
+   out=c.scan(True);self.assertEqual(out[0]['state'],'dispatched',out);self.assertEqual(len(b.sent),1)
+ def test_first_refusal_stops_the_rest_of_the_run(self):
+  class B(Bus):
+   def send(self,*a):raise control.BusRefused('BUS_HTTP_429')
+  ts=[base(id='a',prefix='AB1-T1'),base(id='b',prefix='AB1-T2',execution_actor='Finance')]
+  with tempfile.TemporaryDirectory() as tmp:
+   c=ctl(tmp,ts,B());self.assertEqual(sorted(x['state'] for x in c.scan(True)),['held_after_send_failure','refused'])
+ def test_unticked_vetted_on_the_fresh_read_stops_the_send(self):
+  class Z(Zoho):
+   def projects(self,m,path,body=None):
+    r=super().projects(m,path,body)
+    if '/tasks/' in path and '/comments' not in path:r=dict(r);r.pop('vetted',None)   # Zoho omits a cleared field
+    return r
+   def read(self,op,args):
+    r=dict(super().read(op,args));r.pop('vetted',None);return r
+  with tempfile.TemporaryDirectory() as tmp:
+   b=Bus();c=ctl(tmp,[base()],b);c.a.__class__=Z;out=c.scan(True);self.assertEqual(b.sent,[]);self.assertEqual(out[0]['state'],'approval_not_explicit')
+ def test_a_total_relay_outage_is_not_ok(self):
+  class B(Bus):
+   def status(self,cid):raise RuntimeError('BUS_HTTP_503')
+   def alert(self,*a):raise RuntimeError('BUS_HTTP_503')
+  with tempfile.TemporaryDirectory() as tmp:
+   c=ctl(tmp,[base(execution_actor='Damian')],B());row(c,task='z',state='dispatched',cid='x');control.cycle(c);hb=json.loads((c.root/'latest-run.json').read_text());self.assertFalse(hb['ok']);self.assertTrue(any('status reads failed' in e for e in hb['errors']));self.assertTrue(any('escalation' in e for e in hb['errors']))
+ def test_healthy_run_is_ok(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=ctl(tmp,[base()],Bus());control.cycle(c);self.assertTrue(json.loads((c.root/'latest-run.json').read_text())['ok'])
+ def test_gates_sentence_does_not_deadlock(self):
+  t={'prefix':'CA1-T40','resume_context':'Subtask of the audit (CA1-T36). Gates CA1-T37, T39 and T41, which are blocked until the CANON path is confirmed. 4 Nov check: the path resolves.'}
+  self.assertEqual(control.G.analyse(t)['tasks'],[])
+ def test_a_negated_clause_does_not_hide_a_real_wait(self):
+  self.assertEqual(control.G.analyse({'resume_context':'Not blocked by legal, but waiting on SA5-T9.'})['tasks'],['SA5-T9'])
+ def test_block_reply_with_another_reason_never_auto_resumes(self):
+  self.assertEqual(control.G.block_refs('STATUS: BLOCKED Waiting on SA5-T2. Also needs Damian to approve ADR-246.'),[])
+  self.assertEqual(control.G.block_refs('STATUS: BLOCKED AB1-T1 waits on AB1-T2.','AB1-T1'),['AB1-T2'])
+ def test_journal_quoting_the_marker_does_not_resume(self):
+  class Z(Zoho):
+   def projects(self,m,path,body=None):
+    return [{'content':'[PROJECT-DISPATCH pd-old blocked] agent wrote [PROJECT-DISPATCH RESUME pd-old]'}] if '/comments' in path else super().projects(m,path,body)
+  with tempfile.TemporaryDirectory() as tmp:
+   b=Bus();c=ctl(tmp,[base()],b);c.a.__class__=Z;row(c);c.scan(True);self.assertEqual(b.sent,[])
+ def test_resumable_row_reads_a_late_complete(self):
+  class B(Bus):
+   def status(self,cid):return {'from':'claude-systems','to':'compliance','state':'acknowledged','acknowledged_by':'compliance','replies':[{'text':'STATUS: BLOCKED x'},{'text':'STATUS: COMPLETE done'}]}
+  with tempfile.TemporaryDirectory() as tmp:
+   c=ctl(tmp,[base()],B());row(c,state='resumable');c.reconcile();self.assertEqual(c.rows()[0]['state'],'awaiting_verification')
+ def test_resume_comment_survives_a_busy_function(self):
+  class Z(Zoho):
+   def projects(self,m,path,body=None):
+    return [{'content':'[PROJECT-DISPATCH RESUME pd-old] x'}] if '/comments' in path else super().projects(m,path,body)
+  a,d=base(id='t',resume_context='Waiting on the vendor.'),base(id='o',prefix='AB1-T2')
+  with tempfile.TemporaryDirectory() as tmp:
+   b=Bus();c=ctl(tmp,[a,d],b);c.a.__class__=Z;row(c);row(c,task='o',state='acknowledged',cid='busy');c.scan(True);self.assertEqual(b.sent,[])
+   c.db.execute("UPDATE runs SET state='blocked' WHERE cid='busy'");c.db.commit();c.scan(True);self.assertEqual(len(b.sent),1);self.assertTrue(b.sent[0][1].endswith('-r2'))
+ def test_a_new_pause_under_a_cleared_gate_still_holds(self):
+  g='[{"id":"h","condition":{"type":"task_closed","prefix":"AB1-T9"},"holds":{"projects":["1"]}}]'
+  d=base(id='d',prefix='AB1-T9',name='x',status={'is_closed_type':True},execution_actor='Damian')
+  with tempfile.TemporaryDirectory() as tmp:
+   b=Bus();c=ctl(tmp,[d,base()],b,gates=g,desc='Paused until ADR-300 is decided.');c.scan(True);self.assertEqual(b.sent,[])
+ def test_deadline_cannot_be_swallowed_and_the_run_still_reports(self):
+  self.assertFalse(issubclass(control.RunDeadline,Exception))
+  with tempfile.TemporaryDirectory() as tmp:
+   b=Bus();c=ctl(tmp,[base(execution_actor='Damian')],b)
+   def late():raise control.RunDeadline('deadline')
+   c.projects=late;r=control.cycle(c);self.assertTrue(r['errors']);self.assertTrue((c.root/'latest-run.json').exists());self.assertTrue(alerts(b,'TOOL FAILURE'))
+ def test_journal_each_state_once(self):
+  n=[]
+  with tempfile.TemporaryDirectory() as tmp:
+   c=ctl(tmp,[base()],Bus());c.journal=lambda r:n.append(r['state']);row(c,state='completed');c.reconcile();c.reconcile();c.reconcile();self.assertEqual(n,['completed'])
 if __name__=='__main__':unittest.main()
