@@ -1,0 +1,40 @@
+{
+ "project": "1156860000009155003",
+ "task": "1156860000009661008",
+ "acceptance_sha256": "e63ea8594d9cd8bba36418654444275218b221abeffed59a18ca58f18b0090c1",
+ "author": "Claude Code, independent check 5 Nov 2026: read handoff/ACCEPTANCE-SUMMARY-2026-10-29.md directly: 15 of 16 criteria apply, 14 pass, #15 accepted, none fail. With no failed criterion the action list is correctly empty and nothing needed dispatching.",
+ "checks": [
+  {
+   "criterion": "Task is BO2-T79",
+   "operation": "project_task",
+   "params": {
+    "project_id": "1156860000009155003",
+    "task_id": "1156860000009661008"
+   },
+   "path": [
+    "prefix"
+   ],
+   "equals": "BO2-T79"
+  },
+  {
+   "criterion": "The failed-criteria list was read and is empty",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009155003",
+    "task_id": "1156860000009661008"
+   },
+   "path": [],
+   "contains": "no failed criterion"
+  },
+  {
+   "criterion": "Open items that are not failures are on existing tasks",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009155003",
+    "task_id": "1156860000009661008"
+   },
+   "path": [],
+   "contains": "BO2-T89"
+  }
+ ]
+}

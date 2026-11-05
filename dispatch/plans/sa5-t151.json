@@ -1,0 +1,50 @@
+{
+ "project": "1156860000009158003",
+ "task": "1156860000009642090",
+ "acceptance_sha256": "6d5ec1fb2d50aeedf497c7b860dfcfe2d2a68c65bd8f9d7f6c3c325c49069cce",
+ "author": "Claude Code, independent check 5 Nov 2026: read WorkDrive spec hxevwab20364dddaf49a2b0cfb96f086efa87, sha256 prefix c56c09f2 matched. Outcome is written; the Flow decision is recorded as an untested recommendation, which the definition of done allows. Building and testing Flow is outside this task.",
+ "checks": [
+  {
+   "criterion": "Task is SA5-T151",
+   "operation": "project_task",
+   "params": {
+    "project_id": "1156860000009158003",
+    "task_id": "1156860000009642090"
+   },
+   "path": [
+    "prefix"
+   ],
+   "equals": "SA5-T151"
+  },
+  {
+   "criterion": "The end-of-call CRM outcome spec is on file",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009158003",
+    "task_id": "1156860000009642090"
+   },
+   "path": [],
+   "contains": "hxevwab20364dddaf49a2b0cfb96f086efa87"
+  },
+  {
+   "criterion": "The outcome is one Contact, Note and Task per call",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009158003",
+    "task_id": "1156860000009642090"
+   },
+   "path": [],
+   "contains": "One outcome per call"
+  },
+  {
+   "criterion": "The Zoho Flow routing decision is recorded on this task",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009158003",
+    "task_id": "1156860000009642090"
+   },
+   "path": [],
+   "contains": "Flow decision recorded"
+  }
+ ]
+}
