@@ -1,0 +1,50 @@
+{
+ "project": "1156860000009156003",
+ "task": "1156860000009659004",
+ "acceptance_sha256": "afd3e806de34ac4c3da43db6a28002f9271c4eb7729f566b3452708d5f22c5f2",
+ "author": "Claude Code (independent verification), 5 Nov 2026; matrix v2 read from WorkDrive hxevwe001a81318a34bf1a41fb79ed5a3703f (15,195 bytes), synced copy sha256 f9622e36...389b, launchd plists and Render services read directly",
+ "checks": [
+  {
+   "criterion": "Task is FI2-T69",
+   "operation": "project_task",
+   "params": {
+    "project_id": "1156860000009156003",
+    "task_id": "1156860000009659004"
+   },
+   "path": [
+    "prefix"
+   ],
+   "equals": "FI2-T69"
+  },
+  {
+   "criterion": "Matrix v2 is linked on the task by WorkDrive file id",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009156003",
+    "task_id": "1156860000009659004"
+   },
+   "path": [],
+   "contains": "hxevwe001a81318a34bf1a41fb79ed5a3703f"
+  },
+  {
+   "criterion": "Task comments carry the full sha256 of the saved v2",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009156003",
+    "task_id": "1156860000009659004"
+   },
+   "path": [],
+   "contains": "f9622e362e3ddd06ba27c15f667f6ef4fa6944f11d0f9dbb6675a0ec828a389b"
+  },
+  {
+   "criterion": "Task comments record the Render service for the Plaid writer",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009156003",
+    "task_id": "1156860000009659004"
+   },
+   "path": [],
+   "contains": "srv-dbg1q8mc6qcc73e2cgtg"
+  }
+ ]
+}
