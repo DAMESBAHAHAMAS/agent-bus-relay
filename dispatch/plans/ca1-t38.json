@@ -1,0 +1,50 @@
+{
+ "project": "1156860000009157037",
+ "task": "1156860000009656037",
+ "acceptance_sha256": "0dd357f6e936fbe4c7bda8c0ddfadf6dcce9bb0c42a37b683b84e3c0426b7fb5",
+ "author": "Claude Code, independent check 5 Nov 2026: read the WorkDrive report vk0ri918ddbcf37bc43b3a02b8e4493bbcd8c in full; finding and 18 test cases with results present. The executor did not author this plan.",
+ "checks": [
+  {
+   "criterion": "Task is CA1-T38",
+   "operation": "project_task",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009656037"
+   },
+   "path": [
+    "prefix"
+   ],
+   "equals": "CA1-T38"
+  },
+  {
+   "criterion": "A finding of APPROVED, APPROVED WITH CONDITIONS or REJECTED is recorded",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009656037"
+   },
+   "path": [],
+   "contains": "APPROVED WITH CONDITIONS"
+  },
+  {
+   "criterion": "Acceptance test cases with results are recorded",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009656037"
+   },
+   "path": [],
+   "contains": "18 cases"
+  },
+  {
+   "criterion": "The report is on file",
+   "operation": "project_task_comments",
+   "params": {
+    "project_id": "1156860000009157037",
+    "task_id": "1156860000009656037"
+   },
+   "path": [],
+   "contains": "vk0ri918ddbcf37bc43b3a02b8e4493bbcd8c"
+  }
+ ]
+}
