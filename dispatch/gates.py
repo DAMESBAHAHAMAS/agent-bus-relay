@@ -27,7 +27,7 @@ _PROSE=re.compile(r'(?i)(?<![A-Za-z])(?:paused?|on hold|parked|parking|held|hold
 _ROUTINE=re.compile(r'(?i)\b(?:held after|on hold for review)\b')
 def clean(t):return html.unescape(re.sub(r'\s+',' ',re.sub('<[^>]+>',' ',str(t or '')))).strip()
 def text_of(t):
- notes=re.findall(r'(?im)^\s*(?:note|notes|waiting|blocked|hold)\b.*$',html.unescape(re.sub('<[^>]+>','\n',str(t.get('description') or ''))))
+ notes=re.findall(r'(?im)^\s*(?:note|notes|waiting|waits|blocked|hold|do not start|depends|dependency|paused|pending)\b.*$',html.unescape(re.sub('<[^>]+>','\n',str(t.get('description') or ''))))
  return ' '.join([clean(t.get(k)) for k in ('resume_context','next_activity')]+[x.strip().rstrip('.')+'.' for x in notes])
 def expand(s):
  """Every code in a sentence. CA1-T37, T38 and T39 is three tasks; A6Y2-T77 to A6Y2-T80 is four."""

@@ -447,4 +447,26 @@ class Withheld(unittest.TestCase):
    def status(self,cid):return {'from':'claude-systems','to':'compliance','state':'acknowledged','acknowledged_by':'compliance','replies':[{'text':'Received. Part 1 of 2 of my reply was withheld by the relay: It appeared to contain a long key or token.'}]}
   with tempfile.TemporaryDirectory() as tmp:
    b=B();c=ctl(tmp,[base()],b);row(c,state='acknowledged',cid='x');c.reconcile();self.assertEqual(c.rows()[0]['state'],'stalled');c.scan(True);c.flush();self.assertTrue(alerts(b,'STALLED'));self.assertFalse(c.busy('compliance','other'))
+class Sustained(unittest.TestCase):
+ def test_a_refused_alert_keeps_the_run_unhealthy_until_it_resolves(self):
+  class B(Bus):
+   def alert(self,*a):raise control.BusRefused('BUS_HTTP_400')
+  with tempfile.TemporaryDirectory() as tmp:
+   c=ctl(tmp,[base(execution_actor='Damian')],B());control.cycle(c);c.seen=set();c.queue=[];control.cycle(c);c.seen=set();c.queue=[];control.cycle(c)
+   self.assertFalse(json.loads((c.root/'latest-run.json').read_text())['ok'])
+ def test_report_failure_reaches_the_bus(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   b=Bus();c=ctl(tmp,[base()],b)
+   def boom():raise RuntimeError('disk full')
+   c.report=boom;control.cycle(c);self.assertTrue(alerts(b,'TOOL FAILURE'));self.assertFalse(json.loads((c.root/'latest-run.json').read_text())['ok'])
+ def test_old_resume_comment_does_not_answer_a_newer_block(self):
+  class Z(Zoho):
+   def projects(self,m,path,body=None):
+    return [{'content':'[PROJECT-DISPATCH RESUME pd-old] x','created_time':'2026-11-01T00:00:00Z'}] if '/comments' in path else super().projects(m,path,body)
+  with tempfile.TemporaryDirectory() as tmp:
+   b=Bus();c=ctl(tmp,[base()],b);c.a.__class__=Z;row(c,blocked_at='2026-11-05T13:00:00+00:00');c.scan(True);self.assertEqual(b.sent,[])
+ def test_resume_context_is_read_for_owner_acts(self):
+  self.assertEqual(control.readiness(P,base(resume_context='Then pay the vendor.'),[]),'material_action_requires_existing_specific_authority')
+ def test_wait_written_in_the_description_holds(self):
+  self.assertEqual(control.readiness(P,base(description='Do not start until AB1-T2 closes.'),[],index={}),'dependency_open_or_unresolved:AB1-T2')
 if __name__=='__main__':unittest.main()

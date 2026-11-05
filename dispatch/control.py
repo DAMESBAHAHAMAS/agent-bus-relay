@@ -65,6 +65,7 @@ def record(r):
  if isinstance(r,list):
   if len(r)!=1: raise ValueError('Expected exactly one record')
   return r[0]
+ if not isinstance(r,dict):raise ValueError('No task record returned')
  if 'tasks' in r: return record(r['tasks'])
  return r
 def project_function(project):
@@ -78,7 +79,7 @@ def requirements(t):
  return {'acceptance':field(d,'DEFINITION OF DONE') or plain(t.get('definition_of_done') or '').strip(),'evidence':field(d,'EVIDENCE REQUIRED') or plain(t.get('evidence_required') or '').strip(),'dependencies':field(d,'DEPENDENCIES')}
 def native_predecessors(t):return [str(x.get('id')) for x in ((t.get('dependency_info') or {}).get('predecessor') or []) if x.get('id')]
 def owner_only(t):
- return bool(OWNER_DOES.search(' '.join(G.clean(t.get(k)) for k in ('name','next_activity')))) or bool(OWNER_ACCEPTS.search(' '.join(G.clean(t.get(k)) for k in ('description','definition_of_done','evidence_required'))))
+ return bool(OWNER_DOES.search(' '.join(G.clean(t.get(k)) for k in ('name','next_activity')))) or bool(OWNER_ACCEPTS.search(' '.join(G.clean(t.get(k)) for k in ('description','definition_of_done','evidence_required','resume_context'))))
 def finder(tasks,index):
  """Zoho codes are portal-wide. M-codes repeat across projects, so they resolve only inside the task's own project."""
  def find(ref):
@@ -160,7 +161,9 @@ class Control:
   self.root=pathlib.Path(state or HOME/'.openclaw/state/project-dispatch');self.root.mkdir(parents=True,exist_ok=True)
   self.db=sqlite3.connect(self.root/'control.sqlite3');self.db.row_factory=sqlite3.Row
   self.db.execute('PRAGMA journal_mode=WAL');self.db.execute('PRAGMA synchronous=FULL')
-  self.db.executescript('CREATE TABLE IF NOT EXISTS runs (cid TEXT PRIMARY KEY, project TEXT, task TEXT, owner TEXT, executor TEXT, state TEXT, data TEXT, updated TEXT, UNIQUE(project,task)); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, cid TEXT, state TEXT, data TEXT, at TEXT); CREATE TABLE IF NOT EXISTS escalations (key TEXT PRIMARY KEY, kind TEXT, text TEXT, first_at TEXT, level INTEGER, sent_at TEXT, missed INTEGER DEFAULT 0, resolved_at TEXT); CREATE TABLE IF NOT EXISTS gate_state (id TEXT PRIMARY KEY, state TEXT, detail TEXT, changed_at TEXT, announced INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS assignments (code TEXT PRIMARY KEY, tries INTEGER);')
+  self.db.executescript('CREATE TABLE IF NOT EXISTS runs (cid TEXT PRIMARY KEY, project TEXT, task TEXT, owner TEXT, executor TEXT, state TEXT, data TEXT, updated TEXT, UNIQUE(project,task)); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, cid TEXT, state TEXT, data TEXT, at TEXT); CREATE TABLE IF NOT EXISTS escalations (key TEXT PRIMARY KEY, kind TEXT, text TEXT, first_at TEXT, level INTEGER, sent_at TEXT, missed INTEGER DEFAULT 0, resolved_at TEXT, refused INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS gate_state (id TEXT PRIMARY KEY, state TEXT, detail TEXT, changed_at TEXT, announced INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS assignments (code TEXT PRIMARY KEY, tries INTEGER);')
+  try:self.db.execute('ALTER TABLE escalations ADD COLUMN refused INTEGER DEFAULT 0');self.db.commit()
+  except sqlite3.OperationalError:pass   # already there
   self.seen=set();self.queue=[];self.gate_results=[];self.halt=None;self.undeliverable=[]
  def rows(self):return [dict(r) for r in self.db.execute('SELECT * FROM runs')]
  def save(self,cid,state,data):
@@ -407,6 +410,8 @@ class Control:
       try:self.bus.alert(target,cid+'-'+str(n),header+'\n- '+it[1].upper()+': '+re.sub(r'(?<![-\w])[0-9a-fA-F]{32,}|\d{13,}','[id]',it[2])[:170]);landed.append(it)
       except BusRefused:refused.append(it)
      mark(landed+refused);self.undeliverable+=[it[2][:120] for it in refused]
+     for it in refused:self.db.execute('UPDATE escalations SET refused=1 WHERE key=?',(it[0],))
+     self.db.commit()
      sent.append({'target':target,'cid':cid,'items':len(landed),'refused':len(refused),'left':left})
    except Exception as e:sent.append({'target':target,'error':str(e)[:160],'items':len(items)})
   self.queue=[];return sent
@@ -607,8 +612,9 @@ class Control:
   """A deliberate resume: a comment naming this exact dispatch id. Any note on the task is not a signal."""
   r=self.a.projects('GET',f"projects/{row['project']}/tasks/{row['task']}/comments?per_page=100")
   mark='[PROJECT-DISPATCH RESUME '+row['cid']+']'
+  since=str(json.loads(row['data']).get('blocked_at') or json.loads(row['data']).get('stalled_at') or '')[:19]
   # Must open the comment. The dispatcher's own journal quotes agent text, so a mark inside one proves nothing.
-  return any(plain(x.get('content') or x.get('comment') or '').strip().startswith(mark) for x in (r if isinstance(r,list) else r.get('comments',[])))
+  return any(plain(x.get('content') or x.get('comment') or '').strip().startswith(mark) and str(x.get('created_time') or '9')[:19]>=since for x in (r if isinstance(r,list) else r.get('comments',[])))
  def resume_reason(self,row,t,reason,tasks=()):
   """Why a stopped task may go again. Only a named dependency closing or a deliberate resume counts."""
   data=json.loads(row['data'])
@@ -642,7 +648,9 @@ class Control:
   if any(x.get('error') for x in esc):failed.append('an escalation could not be delivered')
   if any(x.get('state')=='dispatch_failed' for x in d):failed.append('a dispatch failed')
   if any(x.get('state')=='PRIMARY_TOOL_ACCESS_FAILED' for x in d):failed.append('a project could not be read')
-  if self.undeliverable:failed.append(str(len(self.undeliverable))+' escalation items the relay refused')
+  stuck=self.db.execute('SELECT COUNT(*) n FROM escalations WHERE refused=1 AND resolved_at IS NULL').fetchone()['n']
+  if stuck:failed.append(str(stuck)+' escalation items the relay refused; nobody has been told about them')
+  if any(x.get('error') for x in r):failed.append('a ledger row could not be reconciled')
   rot=self.rotate_audit()
   if rot and rot.startswith('rotation failed'):failed.append(rot)
   o=self.db.execute('SELECT COUNT(*) n,MIN(first_at) f FROM escalations WHERE resolved_at IS NULL').fetchone()
@@ -658,9 +666,12 @@ def cycle(c):
  start=time.time()
  def rearm():
   # An alarm fires once. Re-arm it so a slow scan after a slow reconcile is still bounded.
-  if signal.getsignal(signal.SIGALRM) is on_deadline:signal.alarm(max(30,int(RUN_DEADLINE-(time.time()-start))))
+  if signal.getsignal(signal.SIGALRM) is on_deadline:signal.alarm(max(1,int(RUN_DEADLINE-(time.time()-start))))
  result['receipts']=phase('reconcile',c.reconcile) or []
- rearm();scanned=phase('scan',lambda:c.scan(True));result['dispatch']=scanned or []
+ def bounded_scan():
+  if time.time()-start>=RUN_DEADLINE:raise RunDeadline('the deadline passed during reconcile, so nothing was sent this run')
+  rearm();return c.scan(True)
+ scanned=phase('scan',bounded_scan);result['dispatch']=scanned or []
  signal.alarm(0)
  result['report']=phase('report',c.report)   # before the digest, so a report failure still reaches someone
  partial=scanned is None or any(x.get('state')=='PRIMARY_TOOL_ACCESS_FAILED' for x in result['dispatch'])
@@ -677,7 +688,9 @@ def main():
   if args.command=='verify':
    from verification import verify
    result=verify(c,args.cid,args.plan,args.close)
-  elif args.command=='proof':result=c.dispatch({'id':TEST_PROJECT,'name':'Systems and Automation'},c.task(TEST_PROJECT,TEST_TASK),[],True)
+  elif args.command=='proof':
+   try:result=c.dispatch({'id':TEST_PROJECT,'name':'Systems and Automation'},c.task(TEST_PROJECT,TEST_TASK),[],True)
+   except (ValueError,PermissionError) as e:result={'state':'proof_unavailable','reason':str(e)[:160]}
   elif args.command=='scan':result=c.scan()
   elif args.command=='run':
    signal.signal(signal.SIGALRM,on_deadline);signal.alarm(RUN_DEADLINE);result=cycle(c)
