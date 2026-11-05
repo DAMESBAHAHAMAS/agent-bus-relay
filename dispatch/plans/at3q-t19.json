@@ -1,0 +1,29 @@
+{
+ "project": "1156860000009404005",
+ "task": "1156860000009642096",
+ "acceptance_sha256": "31a844dafd356307e2c8810c4efd6487a4eee5730dfb5b5c111cadd7444682e9",
+ "author": "Claude Code independent verification, 5 Nov 2026; read bizops operations.jsonl lines 31097-31107 and progress.py line 66 directly",
+ "checks": [
+  {
+   "criterion": "Task is AT3Q-T19",
+   "operation": "project_task",
+   "params": {"project_id": "1156860000009404005", "task_id": "1156860000009642096"},
+   "path": ["prefix"],
+   "equals": "AT3Q-T19"
+  },
+  {
+   "criterion": "Run log comment records BO2-T67 carried through the listing and task read",
+   "operation": "project_task_comments",
+   "params": {"project_id": "1156860000009404005", "task_id": "1156860000009642096"},
+   "path": [],
+   "contains": "r2-run1-complete-verified"
+  },
+  {
+   "criterion": "Run log names the code at both steps",
+   "operation": "project_task_comments",
+   "params": {"project_id": "1156860000009404005", "task_id": "1156860000009642096"},
+   "path": [],
+   "contains": "returned prefix BO2-T67, id 1156860000009611011"
+  }
+ ]
+}

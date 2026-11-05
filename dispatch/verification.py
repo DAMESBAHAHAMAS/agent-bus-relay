@@ -27,7 +27,8 @@ def verify(control,cid,plan_name,close=False):
    r=control.a.projects('GET',f"projects/{row['project']}/tasks/{row['task']}/comments?per_page=100")
    actual='\n'.join(plain(x.get('comment') or x.get('content') or '') for x in (r if isinstance(r,list) else r.get('comments',[])))
   else:
-   actual=control.a.read(check['operation'],check['params'])
+   reader=control.file_reader(row['executor']) if check['operation'].startswith('workdrive') else control.a
+   actual=reader.read(check['operation'],check['params'])
    for key in check['path']:
     actual=actual[key] if isinstance(key,int) else actual.get(key)
   if 'equals' in check:passed=type(actual) is type(check['equals']) and actual==check['equals']
