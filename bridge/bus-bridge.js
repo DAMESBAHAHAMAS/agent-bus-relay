@@ -297,7 +297,7 @@ const WAKE_ALERTS = process.env.BUS_WAKE_ALERTS !== "0";
 // It means received, not complete; the real result follows on the same correlation id and completion is still tracked separately.
 // BUS_IMMEDIATE_ACK=0 turns it off. Requests only, first attempt only, never alerts or replies.
 const IMMEDIATE_ACK = process.env.BUS_IMMEDIATE_ACK !== "0";
-const wakes = (e) => e.type === "request" || (WAKE_ALERTS && e.type === "alert" && e.sender_class === "internal" && e.from !== "relay" && !/^WAKE FAILED/.test(String(e.payload)));
+const wakes = (e) => e.type === "request" || (WAKE_ALERTS && e.type === "alert" && e.sender_class === "internal" && e.from !== "relay" && !/^(WAKE FAILED|DELIVERY INCOMPLETE)/.test(String(e.payload)));
 async function handle(agent, key, env, messageId) {
   const cid = env.correlation_id;
   const k = job(agent, messageId);
@@ -382,7 +382,9 @@ async function handle(agent, key, env, messageId) {
     if (fallbackAcked) {
       // Cloudflare blocked a literal curl/wget command line in a probe (11 Nov 2026). Describe such lines in words for the resend only;
       // the first attempt and the saved original in the withheld folder are unchanged.
-      const describeCmd = (t) => t.split("\n").map((l) => /^\s*(\$\s*)?(curl|wget)\b/i.test(l) ? "[a " + (/wget/i.test(l) ? "wget" : "curl") + " command line was here; withheld because the edge blocks it. The full text is saved on the Mac bridge]" : l).join("\n");
+      const describeCmd = (t) => t.split("\n").map((l) => /^\s*(\$\s*)?(curl|wget)\b/i.test(l) ? "[a " + (/wget/i.test(l) ? "wget" : "curl") + " command line was here; withheld because the edge blocks it. The full text is saved on the Mac bridge]" : l).join("\n")
+        // Inline too: the edge also blocks `curl -sI https://...` mid-sentence (probes 11 Nov 2026). Drop the flags that follow curl/wget; the rest of the text is unchanged.
+        .replace(/\b(curl|wget)((?:\s+-\S+(?:\s+'[^']*'|\s+"[^"]*")?)+)/gi, "$1 [flags withheld]");
       const rest = describeCmd(parts.slice(fallbackFrom).join("\n\n"));
       const small = splitReply(rest, 1200, (x) => JSON.stringify(x).length);
       const todo = small.map((t, n) => ({ n: n + 1, t }));
