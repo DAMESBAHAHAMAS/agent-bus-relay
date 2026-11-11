@@ -338,8 +338,15 @@ async function handle(agent, key, env, messageId) {
       log(agent, "produced no reply for", cid, "(" + result.status + "). No acknowledgment sent.");
       // After the last attempt, say so on the bus. This is an alert, never an acknowledgment, so the request stays open.
       if ((attempts.get(k) || 0) >= MAX_ATTEMPTS) {
-        await api(key, "POST", "/messages", { to: env.from, type: "alert", correlation_id: cid,
-          payload: "WAKE FAILED: " + agent + " could not be woken (" + result.status + "). This notice is from the Mac bridge, not from " + agent + ". " + (acked ? "Receipt was acknowledged immediately but the work did not run, so there is no result." : "The request is still unacknowledged.") }).catch(() => {});
+        const failText = "WAKE FAILED: " + agent + " could not be woken (" + result.status + "). This notice is from the Mac bridge, not from " + agent + ". " + (acked ? "Receipt was acknowledged immediately but the work did not run, so there is no result." : "The request is still unacknowledged.");
+        let ar = await api(key, "POST", "/messages", { to: env.from, type: "alert", correlation_id: cid, payload: failText }).catch(() => ({ status: 0, json: {} }));
+        log(agent, "WAKE FAILED alert for", cid, "HTTP", ar.status);
+        // The relay refuses alerts from outside agents by design (they may only reply). If the request was already acknowledged, say so as a
+        // result reply, which they may send and which cannot change its acknowledged state. The text names the bridge as the source.
+        if (ar.status === 403 && acked) {
+          ar = await postWithRetry(agent, cid, key, { to: env.from, type: "result", correlation_id: cid, payload: "STATUS: BLOCKED. " + failText }).catch(() => ({ status: 0, json: {} }));
+          log(agent, "WAKE FAILED reported as a result reply for", cid, "HTTP", ar.status);
+        }
       } else if (env.type === "alert") {
         // An alert has no ledger row, so the next poll will not bring it back. Retry it here.
         setTimeout(() => handle(agent, key, env, messageId).catch((e) => log(agent, "alert", cid, "failed:", String(e && e.message || e).slice(0, 200))), 20000);
