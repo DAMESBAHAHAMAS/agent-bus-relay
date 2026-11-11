@@ -5,7 +5,7 @@ let mode="recover",posts=[];
 const srv=http.createServer((q,s)=>{let b="";q.on("data",d=>b+=d);q.on("end",()=>{const j=JSON.parse(b);posts.push(j.type+":"+j.payload.slice(0,14));
  const full=/(^|\n)\s*curl /.test(j.payload)||(!j.payload.startsWith("Received")&&j.type!=="alert"&&!j.payload.startsWith("[resend"));
  const resend=j.payload.startsWith("[resend");
- if(full||(mode==="stuck"&&resend&&false)){s.writeHead(403,{"content-type":"text/html",server:"cloudflare","cf-ray":"r1-MIA"});return s.end("<html>Blocked</html>")}
+ if(full||(mode==="stuck"&&resend)){s.writeHead(403,{"content-type":"text/html",server:"cloudflare","cf-ray":"r1-MIA"});return s.end("<html>Blocked</html>")}
  s.writeHead(201,{"content-type":"application/json"});s.end("{}")})});
 async function api(key, method, pathAndQuery, body, timeoutMs) {
   const r = await fetch(global.BASE + pathAndQuery, { method, headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
