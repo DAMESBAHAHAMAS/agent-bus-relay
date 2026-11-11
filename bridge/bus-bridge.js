@@ -259,9 +259,29 @@ function logUsage(agent, id, result) {
 async function api(key, method, pathAndQuery, body, timeoutMs) {
   const r = await fetch(BASE + pathAndQuery, { method, headers: { Authorization: "Bearer " + key, "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(timeoutMs || 40000) });
-  let j = {};
-  try { j = await r.json(); } catch (e) {}
-  return { status: r.status, json: j };
+  // Keep the raw body: a non-JSON answer (an edge or proxy block, not a relay rule) used to be logged as "{}", hiding the cause.
+  let j = {}, raw = "";
+  try { raw = await r.text(); j = JSON.parse(raw); } catch (e) {}
+  const h = (n) => r.headers.get(n) || "";
+  return { status: r.status, json: j, raw, hdr: { server: h("server"), ctype: h("content-type"), cfray: h("cf-ray"), renderRouting: h("rndr-id") } };
+}
+
+// Post a reply with its own retry. A failed post must not cost a second wake of the whole task. Retries only what can be transient:
+// a network error, 429, 5xx, or a 403 whose body is not the relay's JSON (the relay always refuses in JSON, so that one came from the edge).
+// A JSON refusal or a 422 is the relay's real answer and is returned at once. Waits 2 s, 6 s, then 15 s.
+async function postWithRetry(agent, cid, key, body) {
+  const waits = [2000, 6000, 15000];
+  let r;
+  for (let n = 0; n <= waits.length; n++) {
+    try { r = await api(key, "POST", "/messages", body); }
+    catch (e) { r = { status: 0, json: {}, raw: String(e && e.message || e).slice(0, 200), hdr: {} }; }
+    const relayJson = r.json && typeof r.json === "object" && Object.keys(r.json).length > 0;
+    const transient = r.status === 0 || r.status === 429 || r.status >= 500 || (r.status === 403 && !relayJson);
+    if (r.status === 201 || !transient || n === waits.length) break;
+    log(agent, "reply post for", cid, "got HTTP", r.status, "(not a relay refusal); retry", n + 1, "of", waits.length, "in", waits[n] / 1000, "s. body:", JSON.stringify(String(r.raw || "").slice(0, 300)), "headers:", JSON.stringify(r.hdr));
+    await sleep(waits[n]);
+  }
+  return r;
 }
 
 // One job per bus message, not per correlation id. A second request on an id already answered (a resend, or a follow-up sent with
@@ -312,13 +332,13 @@ async function handle(agent, key, env, messageId) {
     let posted = 0, kept = false;
     for (let i = 0; i < parts.length; i++) {
       const which = parts.length > 1 ? "Part " + (i + 1) + " of " + parts.length + " of my reply" : "My full reply";
-      let r = await api(key, "POST", "/messages", { to: env.from, type, correlation_id: cid, payload: parts[i] });
+      let r = await postWithRetry(agent, cid, key, { to: env.from, type, correlation_id: cid, payload: parts[i] });
       if (r.status === 422) { // the agent did reply, but the relay withheld the content
         if (!kept) { kept = true; log(agent, "reply for", cid, "withheld by the relay; kept at", keepWithheld(agent, cid, result.text, r.json.detail)); }
-        r = await api(key, "POST", "/messages", { to: env.from, type: "ack", correlation_id: cid, payload: "Received. " + which + " was withheld by the relay: " + String(r.json.detail || "sensitive content") });
+        r = await postWithRetry(agent, cid, key, { to: env.from, type: "ack", correlation_id: cid, payload: "Received. " + which + " was withheld by the relay: " + String(r.json.detail || "sensitive content") });
       }
       if (r.status === 201) posted++;
-      else log(agent, "could not post", which.toLowerCase(), "for", cid, "HTTP", r.status, JSON.stringify(r.json).slice(0, 160));
+      else log(agent, "could not post", which.toLowerCase(), "for", cid, "HTTP", r.status, JSON.stringify(r.json).slice(0, 160), "raw body:", JSON.stringify(String(r.raw || "").slice(0, 300)), "headers:", JSON.stringify(r.hdr || {}));
       if (i < parts.length - 1) await sleep(500);
     }
     // Once any part is on the bus the request is acknowledged, so it is not re-run; a missing part is in the log.
