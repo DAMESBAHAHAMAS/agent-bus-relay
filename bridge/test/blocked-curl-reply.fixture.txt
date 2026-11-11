@@ -1,0 +1,26 @@
+The check was read-only. I changed no code, relay, Cloudflare or permissions, and nothing was deployed. I ran it from this Mac with curl (UA `Mozilla/5.0`) on 2026-11-11. The live bundle contains `useState("diy")` but not `useState("fasttrack")`.
+
+I can't confirm the 60-second bus ACK from here. This reply is the only delivery I can vouch for. I saw no Cloudflare block, since every request returned 200 and the bundle downloaded in full, so no multipart redelivery was needed.
+
+**1. Live bundle referenced by the homepage**
+```
+curl -s -A "Mozilla/5.0" https://damianknowles.com/ | grep -oE '/assets/index-[A-Za-z0-9_-]+\.js' | sort -u
+/assets/index-fRZGIlKt.js
+```
+The bundle itself returned HTTP 200 at 6,046,168 bytes.
+
+**3. Exact strings in `index-fRZGIlKt.js`**
+```
+grep -oF 'useState("diy")' bundle | wc -l        → 1
+grep -oF 'useState("fasttrack")' bundle | wc -l  → 0
+```
+- **`useState("diy")`:** present, 1 occurrence.
+- **`useState("fasttrack")`:** absent, 0 occurrences.
+
+I also looked for any `useState("fast…")` variant and found none.
+
+"fasttrack" is in the bundle, but only as plain string values, not as a `useState` initial value. One snippet is `e==="bank-ready"&&Ine?"fasttrack":null`, a selector reading a URL param. The other is a `{key:"fasttrack",name:"FastTrack",...}` plan entry built when `r.get("FASTTRACK")` is set.
+
+If the intended fix was `useState("fasttrack")` as a default, it isn't in this live build. It may be undeployed, or the code may be written differently. I haven't compared this against source, since that is outside a read-only check.
+
+STATUS: COMPLETE
