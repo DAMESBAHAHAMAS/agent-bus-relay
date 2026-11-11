@@ -277,7 +277,8 @@ async function postWithRetry(agent, cid, key, body) {
     catch (e) { r = { status: 0, json: {}, raw: String(e && e.message || e).slice(0, 200), hdr: {} }; }
     const relayJson = r.json && typeof r.json === "object" && Object.keys(r.json).length > 0;
     const transient = r.status === 0 || r.status === 429 || r.status >= 500 || (r.status === 403 && !relayJson);
-    if (r.status === 201 || !transient || n === waits.length) break;
+    const cfBlock = r.status === 403 && /cloudflare/i.test((r.hdr && r.hdr.server) || ""); // a content block does not clear in seconds: one retry, then the caller's fallback
+    if (r.status === 201 || !transient || n === waits.length || (cfBlock && n >= 1)) break;
     log(agent, "reply post for", cid, "got HTTP", r.status, "(not a relay refusal); retry", n + 1, "of", waits.length, "in", waits[n] / 1000, "s. body:", JSON.stringify(String(r.raw || "").slice(0, 300)), "headers:", JSON.stringify(r.hdr));
     await sleep(waits[n]);
   }
@@ -336,6 +337,15 @@ async function handle(agent, key, env, messageId) {
       if (r.status === 422) { // the agent did reply, but the relay withheld the content
         if (!kept) { kept = true; log(agent, "reply for", cid, "withheld by the relay; kept at", keepWithheld(agent, cid, result.text, r.json.detail)); }
         r = await postWithRetry(agent, cid, key, { to: env.from, type: "ack", correlation_id: cid, payload: "Received. " + which + " was withheld by the relay: " + String(r.json.detail || "sensitive content") });
+      }
+      // Fallback: Cloudflare (not the relay) keeps blocking this reply. Keep the full text locally and acknowledge with a short plain
+      // message so the request is still answered within the window. The relay's own rules are untouched.
+      if (r.status === 403 && /cloudflare/i.test((r.hdr && r.hdr.server) || "") && !(r.json && Object.keys(r.json).length)) {
+        if (!kept) { kept = true; log(agent, "reply for", cid, "blocked by Cloudflare; kept at", keepWithheld(agent, cid, result.text, "cloudflare ray " + (r.hdr.cfray || "?"))); }
+        const ray = (r.hdr.cfray || "unknown").replace(/[^\w-]/g, "");
+        r = await postWithRetry(agent, cid, key, { to: env.from, type: "ack", correlation_id: cid,
+          payload: "Received. " + agent + " finished the task, but my full reply was blocked on its way to the relay by a Cloudflare Blocked page (ray " + ray + ", " + new Date().toISOString().slice(0, 19) + "Z). It is saved on the Mac bridge and not lost. Ask me to resend it in shorter parts." });
+        if (r.status === 201) log(agent, "sent the short fallback acknowledgment for", cid);
       }
       if (r.status === 201) posted++;
       else log(agent, "could not post", which.toLowerCase(), "for", cid, "HTTP", r.status, JSON.stringify(r.json).slice(0, 160), "raw body:", JSON.stringify(String(r.raw || "").slice(0, 300)), "headers:", JSON.stringify(r.hdr || {}));
