@@ -293,6 +293,10 @@ const job = (agent, messageId) => agent + "|" + messageId;
 // addressee never sees it). Never a relay notice or a WAKE FAILED notice, and never a reply (ack, result): the woken agent's reply would
 // wake the other side in turn, and replies do not count toward the relay's loop limit. BUS_WAKE_ALERTS=0 turns alert wakes off.
 const WAKE_ALERTS = process.env.BUS_WAKE_ALERTS !== "0";
+// Immediate acknowledgment: a short "received, working" ack goes out as soon as the agent is woken, so a slow task cannot miss the ack window.
+// It means received, not complete; the real result follows on the same correlation id and completion is still tracked separately.
+// BUS_IMMEDIATE_ACK=0 turns it off. Requests only, first attempt only, never alerts or replies.
+const IMMEDIATE_ACK = process.env.BUS_IMMEDIATE_ACK !== "0";
 const wakes = (e) => e.type === "request" || (WAKE_ALERTS && e.type === "alert" && e.sender_class === "internal" && e.from !== "relay" && !/^WAKE FAILED/.test(String(e.payload)));
 async function handle(agent, key, env, messageId) {
   const cid = env.correlation_id;
@@ -314,7 +318,14 @@ async function handle(agent, key, env, messageId) {
       done.add(k); save(); log(agent, "finished delegated", cid);
       return;
     }
+    const ackSent = (IMMEDIATE_ACK && env.type === "request" && env.from !== "relay" && (attempts.get(k) || 0) === 1)
+      ? postWithRetry(agent, cid, key, { to: env.from, type: "ack", correlation_id: cid,
+          payload: "Received. " + agent + " is working on it now. The result follows as a separate message on this id." })
+          .then((r) => { log(agent, r.status === 201 ? "immediate ack sent for" : "immediate ack FAILED (HTTP " + r.status + ") for", cid); return r.status === 201; })
+          .catch(() => false)
+      : Promise.resolve(false);
     const result = await WAKE[KINDS[agent]](agent, frame(agent, env), env);
+    await ackSent;
     logUsage(agent, cid, result);
     if (!result.ok) {
       log(agent, "produced no reply for", cid, "(" + result.status + "). No acknowledgment sent.");
