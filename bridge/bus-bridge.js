@@ -330,7 +330,7 @@ async function handle(agent, key, env, messageId) {
     }
     const type = /STATUS:\s*(COMPLETE|BLOCKED)/i.test(result.text) ? "result" : "ack";
     const parts = splitReply(result.text, 3450, (s) => JSON.stringify(s).length);
-    let posted = 0, kept = false;
+    let posted = 0, kept = false, fallbackFrom = -1, fallbackAcked = false;
     for (let i = 0; i < parts.length; i++) {
       const which = parts.length > 1 ? "Part " + (i + 1) + " of " + parts.length + " of my reply" : "My full reply";
       let r = await postWithRetry(agent, cid, key, { to: env.from, type, correlation_id: cid, payload: parts[i] });
@@ -345,14 +345,43 @@ async function handle(agent, key, env, messageId) {
         const ray = (r.hdr.cfray || "unknown").replace(/[^\w-]/g, "");
         r = await postWithRetry(agent, cid, key, { to: env.from, type: "ack", correlation_id: cid,
           payload: "Received. " + agent + " finished the task, but my full reply was blocked on its way to the relay by a Cloudflare Blocked page (ray " + ray + ", " + new Date().toISOString().slice(0, 19) + "Z). It is saved on the Mac bridge and not lost. Ask me to resend it in shorter parts." });
-        if (r.status === 201) log(agent, "sent the short fallback acknowledgment for", cid);
+        if (r.status === 201) { fallbackAcked = true; fallbackFrom = i; log(agent, "sent the short fallback acknowledgment for", cid, "(acknowledged only, NOT complete)"); }
       }
       if (r.status === 201) posted++;
       else log(agent, "could not post", which.toLowerCase(), "for", cid, "HTTP", r.status, JSON.stringify(r.json).slice(0, 160), "raw body:", JSON.stringify(String(r.raw || "").slice(0, 300)), "headers:", JSON.stringify(r.hdr || {}));
+      if (fallbackAcked) break; // the rest is redelivered below in smaller parts
       if (i < parts.length - 1) await sleep(500);
     }
-    // Once any part is on the bus the request is acknowledged, so it is not re-run; a missing part is in the log.
-    if (posted) { done.add(k); save(); log(agent, type === "result" ? "answered" : "acknowledged", cid, parts.length > 1 ? "in " + posted + "/" + parts.length + " parts" : ""); }
+    // A fallback acknowledgment is NOT completion. Resend everything not yet delivered in small plain parts, retrying the failed ones.
+    let incomplete = 0;
+    if (fallbackAcked) {
+      const rest = parts.slice(fallbackFrom).join("\n\n");
+      const small = splitReply(rest, 1200, (x) => JSON.stringify(x).length);
+      const todo = small.map((t, n) => ({ n: n + 1, t }));
+      for (const wait of [0, 20000, 60000]) {
+        if (wait) await sleep(wait);
+        for (const it of todo.filter((x) => !x.ok)) {
+          const rr = await postWithRetry(agent, cid, key, { to: env.from, type, correlation_id: cid, payload: "[resend " + it.n + "/" + small.length + "] " + it.t });
+          if (rr.status === 201) it.ok = true;
+          else log(agent, "redelivery part", it.n + "/" + small.length, "for", cid, "HTTP", rr.status, "still undelivered");
+          await sleep(700);
+        }
+        if (todo.every((x) => x.ok)) break;
+      }
+      incomplete = todo.filter((x) => !x.ok).length;
+      if (incomplete) {
+        state.incomplete = (state.incomplete || []).concat([{ agent, cid, undelivered: incomplete, of: small.length, at: new Date().toISOString() }]).slice(-50);
+        log(agent, "INCOMPLETE delivery for", cid + ":", incomplete, "of", small.length, "parts undelivered; full reply kept in the withheld folder");
+        await api(key, "POST", "/messages", { to: env.from, type: "alert", correlation_id: cid,
+          payload: "DELIVERY INCOMPLETE: " + agent + " acknowledged " + cid + " but " + incomplete + " of " + small.length + " reply parts could not be delivered. The full reply is saved on the Mac bridge. This notice is from the bridge." }).catch(() => {});
+      }
+    }
+    // Once any part is on the bus the request is acknowledged, so the task is not re-run. It is only COMPLETE when every part was delivered.
+    if (posted) {
+      done.add(k); save();
+      if (fallbackAcked) { if (!incomplete) log(agent, "COMPLETE (after fallback and redelivery)", cid); }
+      else log(agent, type === "result" ? "answered" : "acknowledged", cid, parts.length > 1 ? "in " + posted + "/" + parts.length + " parts" : "");
+    }
   } finally { busy.delete(k); }
 }
 
