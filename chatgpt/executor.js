@@ -49,6 +49,12 @@ function git(args, cwd) {
   return new Promise((resolve) => execFile("git", args, { cwd, timeout: 120000, maxBuffer: 8 * 1024 * 1024 },
     (err, stdout, stderr) => resolve({ ok: !err, out: String(stdout || "").trim(), err: String(stderr || "").trim() })));
 }
+// The worktree's own git folder and the repository's shared one, as absolute paths, for the run's sandbox (execSettings).
+async function gitDirs(wt) {
+  const g = await git(["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], wt);
+  const [gitDir, commonDir] = g.ok ? g.out.split("\n") : [];
+  return gitDir && commonDir ? { gitDir, commonDir } : {};
+}
 const slug = (s) => String(s || "task").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "task";
 async function prepareRepo(d, task) {
   const src = path.join(DEV_ROOT, d.repo);
@@ -60,7 +66,7 @@ async function prepareRepo(d, task) {
   if (fs.existsSync(path.join(wt, ".git"))) {   // a retry of the same task continues on its own worktree and branch
     const b = await git(["rev-parse", "--abbrev-ref", "HEAD"], wt);
     const base = await git(["merge-base", "HEAD", start], wt);   // the fork point, so earlier attempts' commits still count
-    return b.ok && /^chatgpt\//.test(b.out) && base.ok ? { ok: true, cwd: wt, branch: b.out, base: base.out, reused: true } : { ok: false, reason: "existing worktree is not on a chatgpt/ branch" };
+    return b.ok && /^chatgpt\//.test(b.out) && base.ok ? Object.assign({ ok: true, cwd: wt, branch: b.out, base: base.out, reused: true }, await gitDirs(wt)) : { ok: false, reason: "existing worktree is not on a chatgpt/ branch" };
   }
   const branch = "chatgpt/" + d.task_id + "-" + slug(task.name);
   const exists = (await git(["rev-parse", "--verify", "--quiet", "refs/heads/" + branch], src)).ok;
@@ -68,7 +74,7 @@ async function prepareRepo(d, task) {
   const add = await git(exists ? ["worktree", "add", wt, branch] : ["worktree", "add", "-b", branch, wt, start], src);
   if (!add.ok) return { ok: false, reason: "could not create a worktree: " + add.err.slice(0, 160) };
   const base = await git(["rev-parse", "HEAD"], wt);
-  return { ok: true, cwd: wt, branch, base: base.out };
+  return Object.assign({ ok: true, cwd: wt, branch, base: base.out }, await gitDirs(wt));
 }
 
 // The bridge pushes the task branch itself, with an explicit same-name refspec and no force: the model's allowlist has no
@@ -145,10 +151,37 @@ function prompt(task, d, cid, repo) {
     "Each field is at most 1000 characters. Omit what you have nothing for. Definition of Done, Evidence Required and Execution Actor are kept if already set. Execution Actor must be one of: Claude, Damian, Arsalan, Muse, Claude Code, SysAuto, SalesM, Finance, Codex, GPT, Mary Alice, Biz Operations, Compliance, OpenClaw Agent, Other, Notebook. Use \"Claude Code\" for work you are doing yourself. At most 3 issues, only for real problems.";
 }
 
-function runClaude(claudeBin, text, cwd, env) {
-  return new Promise((resolve) => execFile(claudeBin, ["-p", text, "--model", process.env.BUS_EXEC_MODEL || "sonnet", "--output-format", "json",
-    "--settings", SETTINGS, "--setting-sources", "", "--permission-mode", "dontAsk", "--strict-mcp-config", "--no-session-persistence",
-    "--add-dir", path.join(os.homedir(), "Developer")],
+// The settings for one run: executor-settings.json plus this run's sandbox paths. Every shell command the model runs (git, the
+// test runners and any code they execute) is OS-sandboxed: it can write only in the run's own folder (the cwd), plus, for a
+// repository task, the git metadata a commit on its own chatgpt/ branch needs. The files git reads as configuration or runs as
+// hooks stay read-only, so nothing the model writes can change what the bridge's own git commands (verify, push) do.
+// Passed as a JSON string, so no settings file is written where the model could change it.
+function execSettings(cwd, repo) {
+  const s = JSON.parse(fs.readFileSync(SETTINGS, "utf8"));
+  const fsRules = { allowWrite: [], denyWrite: [path.join(cwd, ".git")] };
+  if (repo && repo.gitDir && repo.commonDir) {
+    fsRules.allowWrite.push(repo.gitDir, path.join(repo.commonDir, "objects"), path.join(repo.commonDir, "refs", "heads", "chatgpt"),
+      path.join(repo.commonDir, "logs", "refs", "heads", "chatgpt"));
+    fsRules.denyWrite.push(path.join(repo.gitDir, "commondir"), path.join(repo.gitDir, "gitdir"), path.join(repo.gitDir, "config.worktree"),
+      path.join(repo.commonDir, "config"), path.join(repo.commonDir, "hooks"));
+  }
+  // The file tools may write in ~/.agent-bus/exec/**, but never the worktree's .git pointer ("//" starts an absolute path in a rule).
+  s.permissions.deny.push("Edit(/" + path.join(cwd, ".git") + ")", "Write(/" + path.join(cwd, ".git") + ")");
+  s.sandbox = Object.assign({}, s.sandbox, { filesystem: fsRules });
+  return JSON.stringify(s);
+}
+// The complete argv for one delegated run. No --add-dir: ~/Developer is readable through the Read/Glob/Grep allow rules, and is
+// not a working directory, so neither the file tools nor the sandbox treat it as writable.
+// --tools limits the session to the tools a delegated task uses (no subagents, schedulers, remote triggers or messaging tools).
+const EXEC_TOOLS = "Read,Glob,Grep,Write,Edit,Bash,WebSearch";
+function execArgs(text, { model, cwd, repo }) {
+  return ["-p", text, "--model", model || process.env.BUS_EXEC_MODEL || "sonnet", "--output-format", "json",
+    "--settings", execSettings(cwd, repo), "--setting-sources", "", "--tools", EXEC_TOOLS,
+    "--permission-mode", "dontAsk", "--strict-mcp-config", "--no-session-persistence"];
+}
+
+function runClaude(claudeBin, text, cwd, env, repo) {
+  return new Promise((resolve) => execFile(claudeBin, execArgs(text, { cwd, repo }),
     { cwd, env, timeout: EXEC_TIMEOUT_S * 1000, maxBuffer: 32 * 1024 * 1024 },
     (err, stdout) => {
       try { const j = JSON.parse(String(stdout).slice(String(stdout).indexOf("{"))); resolve({ ok: !j.is_error && typeof j.result === "string", text: j.result || "", status: j.subtype || "ok" }); }
@@ -230,7 +263,7 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
     fs.mkdirSync(cwd, { recursive: true });
     fs.writeFileSync(MARKER, JSON.stringify({ cid, task_id: d.task_id, at: new Date().toISOString() }));
     log("delegated task", d.task_id, "started for", cid, repo ? "in " + cwd : "");
-    const r = await run(claudeBin, prompt(task, d, cid, repo), cwd, childEnv);
+    const r = await run(claudeBin, prompt(task, d, cid, repo), cwd, childEnv, repo);
     if (repo) { const p = await pushBranch(repo); if (!p.ok) log("delegated task", d.task_id, "push failed:", p.err.slice(0, 200)); }
     const evidence = await verify(cwd, repo).catch((e) => "BRIDGE-VERIFIED EVIDENCE: the check failed (" + String(e.message || e).slice(0, 80) + ").");
     log("delegated task", d.task_id, "evidence:", evidence.replace(/\n/g, " | ").slice(0, 300));
@@ -249,4 +282,4 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
   } finally { running = false; try { fs.unlinkSync(MARKER); } catch (e) {} }
 }
 
-module.exports = { delegation, execute, recoverInterrupted, maskIds, prompt, checkTask, runClaude, updateTask, splitReport, summarize, prepareRepo, verify, SETTINGS };
+module.exports = { delegation, execute, recoverInterrupted, maskIds, prompt, checkTask, runClaude, updateTask, splitReport, summarize, prepareRepo, verify, execArgs, execSettings, EXEC_TOOLS, SETTINGS };
