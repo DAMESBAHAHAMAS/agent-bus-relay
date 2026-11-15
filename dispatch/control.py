@@ -729,7 +729,8 @@ class Control:
   by=Counter(x['state'] for x,_ in rows)
   sent24=self.db.execute("SELECT COUNT(*) n FROM events WHERE state='dispatched' AND at>=?",((dt.datetime.now(dt.timezone.utc)-dt.timedelta(hours=24)).isoformat(),)).fetchone()['n']
   totals={'closed_verified':sorted(set(verified)),'awaiting_check':[y.get('prefix') for x,y in rows if x['state']=='awaiting_verification'],'blocked':by['blocked'],'stalled':by['stalled'],'in_progress':sum(by[k] for k in OCCUPYING),'sent_24h':sent24}
-  (self.root/'latest-run.json').write_text(json.dumps({'at':now(),'ok':not failed,'errors':failed,'halt':self.halt,'states':dict(Counter(str(x.get('state')).split(':')[0] for x in d)),'dispatched':[x.get('prefix') for x in d if x.get('state')=='dispatched'],'gates':self.gate_results,'verified':result.get('verified') or [],'totals':totals,'escalated':esc,'open_escalations':o['n'],'oldest_escalation':o['f'],'undeliverable':self.undeliverable},indent=2))
+  hb={'at':now(),'ok':not failed,'errors':failed,'halt':self.halt,'states':dict(Counter(str(x.get('state')).split(':')[0] for x in d)),'dispatched':[x.get('prefix') for x in d if x.get('state')=='dispatched'],'gates':self.gate_results,'verified':result.get('verified') or [],'totals':totals,'escalated':esc,'open_escalations':o['n'],'oldest_escalation':o['f'],'undeliverable':self.undeliverable}
+  (self.root/'latest-run.json').write_text(json.dumps(hb,indent=2));return hb
 
 def cycle(c):
  """Every phase runs whatever the last one did, so the system can always report its own failure."""
@@ -752,10 +753,17 @@ def cycle(c):
  result['report']=phase('report',c.report)   # before the digest, so a report failure still reaches someone
  partial=scanned is None or any(x.get('state')=='PRIMARY_TOOL_ACCESS_FAILED' for x in result['dispatch'])
  result['escalated']=phase('flush',lambda:c.flush(sweep=not partial))
- try:c.heartbeat(result)
+ try:result['heartbeat']=c.heartbeat(result)
  except Exception as e:   # never leave the last green file standing
-  (c.root/'latest-run.json').write_text(json.dumps({'at':now(),'ok':False,'errors':['heartbeat: '+str(e)[:200]]}))
+  result['heartbeat']={'at':now(),'ok':False,'errors':['heartbeat: '+str(e)[:200]]}
+  (c.root/'latest-run.json').write_text(json.dumps(result['heartbeat']))
  return result
+def run_failure(result):
+ """The one stderr line for a red run, or None when the run was green. launchd and log readers see only the exit status and the log."""
+ hb=(result or {}).get('heartbeat') or {}
+ if hb.get('ok') is True:return None
+ errors='; '.join(' '.join(str(e).split()) for e in (hb.get('errors') or ['no heartbeat was recorded']))
+ return dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')+' ERROR project-dispatch run failed: '+errors
 def on_deadline(*_):raise RunDeadline('run passed its '+str(RUN_DEADLINE)+' second deadline')
 def main():
  ap=argparse.ArgumentParser();ap.add_argument('command',choices=['scan','run','reconcile','report','proof','verify','tick','evidence']);ap.add_argument('--state');ap.add_argument('--cid');ap.add_argument('--plan');ap.add_argument('--close',action='store_true');args=ap.parse_args()
@@ -786,4 +794,8 @@ def main():
   from collections import Counter
   print(json.dumps({'command':args.command,'report_root':str(c.root),'summary':dict(Counter(x['state'] for x in result)) if isinstance(result,list) else 'saved'},indent=2))
  else:print(json.dumps(result,indent=2))
+ if args.command=='run':
+  line=run_failure(result)
+  if line:   # exit 2 so launchd's LastExitStatus and anything reading the log can see a red run, not only latest-run.json
+   sys.stdout.flush();print(line,file=sys.stderr,flush=True);sys.exit(2)
 if __name__=='__main__':main()

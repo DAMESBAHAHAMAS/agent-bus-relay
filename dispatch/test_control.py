@@ -621,4 +621,40 @@ class VerifierVerdict(unittest.TestCase):
    c=ctl(tmp,[base()],B());row(c,state='awaiting_verification',cid='x',prefix='AB1-T1')
    with patch.object(c,'plan_path',lambda code:__import__('pathlib').Path(tmp)/'none.json'):c.verify_ready()
    self.assertTrue((c.root/'verify'/'ab1-t1.json').exists());self.assertIn('read that instead of Zoho',B.text)
+class RunExitStatus(unittest.TestCase):
+ """A red run must be visible to launchd and the log, not only in latest-run.json: one timestamped ERROR line and exit 2."""
+ LINE=r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z ERROR project-dispatch run failed: '
+ def _main(self,c,result):
+  import io,contextlib
+  out,err=io.StringIO(),io.StringIO()
+  with patch.object(control,'Control',lambda state=None:c),patch.object(control,'cycle',lambda c_:result),patch.object(control.signal,'signal'),patch.object(control.signal,'alarm'),patch.object(control.sys,'argv',['control.py','run']),contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
+   try:control.main();code=0
+   except SystemExit as e:code=e.code
+  return code,out.getvalue(),err.getvalue()
+ def test_green_run_has_no_failure_line(self):
+  self.assertIsNone(control.run_failure({'heartbeat':{'ok':True,'errors':[]}}))
+ def test_red_run_line_is_one_timestamped_error_line(self):
+  line=control.run_failure({'heartbeat':{'ok':False,'errors':['a gate could not be read','scan: multi\nline']}})
+  self.assertRegex(line,self.LINE+'a gate could not be read; scan: multi line$');self.assertNotIn('\n',line)
+ def test_missing_heartbeat_counts_as_failed(self):
+  self.assertRegex(control.run_failure({}),self.LINE+'no heartbeat was recorded$')
+ def test_unreadable_gate_cycle_is_reported_as_failed(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=ctl(tmp,[base()],Bus())
+   with patch.object(c,'reconcile',return_value=[]),patch.object(c,'scan',side_effect=lambda *a:(setattr(c,'gate_results',[{'id':'master-handoff-accepted','state':'unknown','detail':'404'}]),[])[1]),patch.object(c,'verify_ready',return_value=[]),patch.object(c,'report',return_value={}),patch.object(c,'flush',return_value=[]):r=control.cycle(c)
+   self.assertFalse(r['heartbeat']['ok']);self.assertEqual(r['heartbeat'],json.loads((c.root/'latest-run.json').read_text()))
+   self.assertRegex(control.run_failure(r),self.LINE+'.*a gate could not be read')
+ def test_heartbeat_crash_is_reported_as_failed(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=ctl(tmp,[base()],Bus())
+   with patch.object(c,'heartbeat',side_effect=RuntimeError('boom')),patch.object(c,'reconcile',return_value=[]),patch.object(c,'scan',return_value=[]),patch.object(c,'verify_ready',return_value=[]),patch.object(c,'report',return_value={}),patch.object(c,'flush',return_value=[]):r=control.cycle(c)
+   self.assertRegex(control.run_failure(r),self.LINE+'heartbeat: boom$')
+ def test_main_run_exits_2_with_the_error_line_on_stderr_when_red(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   code,out,err=self._main(ctl(tmp,[base()],Bus()),{'receipts':[],'dispatch':[],'errors':[],'heartbeat':{'ok':False,'errors':['a gate could not be read']}})
+   self.assertEqual(code,2);self.assertRegex(err,self.LINE+'a gate could not be read\n$');self.assertEqual(err.count('\n'),1);self.assertIn('"command": "run"',out)
+ def test_main_run_exits_0_and_is_silent_on_stderr_when_green(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   code,out,err=self._main(ctl(tmp,[base()],Bus()),{'receipts':[],'dispatch':[],'errors':[],'heartbeat':{'ok':True,'errors':[]}})
+   self.assertEqual(code,0);self.assertEqual(err,'')
 if __name__=='__main__':unittest.main()
