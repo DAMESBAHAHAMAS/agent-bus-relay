@@ -40,6 +40,17 @@ MAX_ATTEMPTS = 3     # a task that keeps blocking goes to a person, not round ag
 MAX_SENDS = 4        # per run; the relay refuses over 30 agent-started messages an hour
 RUN_DEADLINE = 780   # seconds; launchd starts the next run at 900
 ASSIGN_LIMIT = 3
+# The dashboard's dispatch_watch rows. These flags put a task in the Business Operations digest when they are raised or come back.
+WATCH_CRITICAL = ('overdue','next_late','stalled','writeback_lag','no_thread','closed_unverified')
+WATCH_EXPORT = os.environ.get('DISPATCH_WATCH_EXPORT')   # a local export of dispatch_watch; used only while fresh, otherwise Supabase
+WATCH_EXPORT_MAX_AGE = 1800   # seconds
+LINE_LIMIT = {'dispatch watch':320}   # a watch line carries the recovery action; other digest lines stay at 170
+# Level 3: what Business Operations and claude-code cannot clear goes to Damian over the gateway watchdog's Telegram route.
+LEVEL3 = os.environ.get('DISPATCH_LEVEL3','on').strip().lower() not in ('0','off','false','no')   # on unless switched off
+LEVEL3_EVERY_HOURS = 4   # one message per issue in this long, while it stays open
+OVERDUE_GRACE_MIN = 15   # overdue this long after Business Operations was told, with the flag still up, goes to Damian
+DOWN_AFTER_RUNS = 2      # consecutive failed runs before the dispatcher counts as down
+DAMIAN_SENDER = pathlib.Path(os.environ.get('DISPATCH_DAMIAN_SENDER',str(HOME/'.openclaw/bin/gateway-watchdog.py')))
 # Owner-only work. What the task tells an agent to do is read strictly, in every word form, so "Publishing" and "payments" count.
 # Acceptance text and the description are read for concrete actions only: "the deployed version" is a fact, "publish the article" is an act.
 OWNER_DOES = re.compile(r"(?i)\b(?:pay|pays|paying|paid|payment|payments|purchas\w*|buy|buying|bought|spend|spending|invoice|invoicing|charge|charging|refund\w*|subscribe|subscribing|settle|renew\w*|upgrade|upgrading|reimburse\w*|wire|wiring|transfer|transferring|order \d+|place an order)\b|\$\d|\b(?:publish|publishes|publishing|published|deploy|deploys|deploying|redeploy\w*|upload\w* the video|schedule[^.;]{0,30}\bposts?|launch|launches|launching|go.?live|make [^.;]{0,30}\b(?:live|public)|push\w*[^.;]{0,30}\bproduction|deployed to|merge to main|release[sd]?\b[^.;]{0,30}\b(?:youtube|site|public|production))\b|\b(?:send|sends|sending|email|emails|emailing|e-mail|text|message|call|calling|contact|contacting|post|posting|reply|replying|follow up|notify|notifying|tell|ask)\b[^.;]{0,40}\b(?:clients?|customers?|leads?|prospects?|vendors?|filers?|public|sms|youtube|instagram|facebook|linkedin|registered agent)\b|\b(?:send|book|schedule)\b[^.;]{0,40}\b(?:proposal|meeting|contact)\b|\boutreach\b|\bcold email\b|\bget rid of\b|\b(?:top up|sign up for|issue [^.;]{0,20}credit)\b|\b(?:delete|deletes|deleting|deleted|purge|purging|trash|wipe|erase|erasing|drop the|clear out|remove the [^.;]{0,30}\b(?:contacts?|records?|rows?|files?|leads?))\b|\b(?:rotate|rotates|rotating|rotation|reset|regenerate|regenerating)\b[^.;]{0,30}\b(?:token|key|secret|password|login|credential)|\bcredentials?\b|\bapi keys?\b|\bpasswords?\b|\boauth\b|\b(?:store|share|give|add)\b[^.;]{0,30}\b(?:secret|login|admin|token)\b|\bgrant\w*\b[^.;]{0,30}\baccess\b|\b(?:admin|administrator)\b[^.;]{0,20}\b(?:rights|role|access)\b|\brole to admin\b|\bas an? [^.;]{0,20}administrator\b|\bapprove its own\b|\bwiden\b[^.;]{0,30}\b(?:permission|key|scope)|\bauthority\b|\bsunbiz\b|\bfile the articles\b|\bss-4\b|\birs\b")
@@ -55,6 +66,34 @@ def hours_since(iso):
   if t.tzinfo is None:t=t.replace(tzinfo=dt.timezone.utc)
   return (dt.datetime.now(dt.timezone.utc)-t).total_seconds()/3600
  except (TypeError,ValueError):return float('inf')
+def iso_z(s):
+ """Supabase writes 'Z'; Python before 3.11 does not read it."""
+ s=str(s or '');return s[:-1]+'+00:00' if s.endswith('Z') else s
+def minute(iso):
+ """A time to the minute in UTC, for digest lines and dedupe keys. Unreadable reads as 'unknown'."""
+ try:
+  t=dt.datetime.fromisoformat(iso_z(iso))
+  if t.tzinfo is None:t=t.replace(tzinfo=dt.timezone.utc)
+  return t.astimezone(dt.timezone.utc).strftime('%Y-%m-%dT%H:%MZ')
+ except (TypeError,ValueError):return 'unknown'
+def watch_pairs(w):
+ """(flag, since) for each critical flag on one dispatch_watch row, sorted."""
+ since=w.get('flag_since') if isinstance(w.get('flag_since'),dict) else {}
+ return sorted({(f,minute(since.get(f))) for f in (w.get('flags') or []) if f in WATCH_CRITICAL})
+def watch_line(code,w,pairs):
+ owner_=str(w.get('recovery_owner') or 'no recovery owner').strip();action=re.sub(r'\s+',' ',html.unescape(str(w.get('recovery_action') or 'none recorded'))).strip()
+ return code+': '+'; '.join(f+' since '+s for f,s in pairs)+'. Recovery owner: '+owner_+'. Recovery action: '+action
+def supabase_get(path):
+ """Read the dashboard's Supabase tables the way its collector does. The key is read from Keychain into memory here and never printed."""
+ key=subprocess.check_output(['/usr/bin/security','find-generic-password','-s','exec-dashboard-supabase-service','-w'],stderr=subprocess.DEVNULL,text=True,timeout=20).strip()
+ url=os.environ.get('EOD_SUPABASE_URL','https://hjycuzfhjokccpygvpvo.supabase.co')+'/rest/v1/'+path
+ with urllib.request.urlopen(urllib.request.Request(url,headers={'apikey':key,'Authorization':'Bearer '+key}),timeout=30) as r:return json.load(r)
+def damian_telegram(text):
+ """The route the gateway watchdog and safe-restart.sh already use to reach Damian: the watchdog's own send(), loaded the way
+ safe-restart.sh's tg() loads it. send() reads the bot token and his chat from openclaw.json at call time; nothing here keeps them."""
+ import importlib.util
+ spec=importlib.util.spec_from_file_location('gateway_watchdog',str(DAMIAN_SENDER));m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+ m.send(text)
 def plain(s): return html.unescape(re.sub('<[^>]+>', '\n', s or ''))
 def field(text, label):
  m = re.search(r'(?im)^\s*'+re.escape(label)+r':\s*(.*?)(?=\n[A-Z][A-Z /_-]+:|\Z)', plain(text), re.S)
@@ -159,16 +198,16 @@ class Bus:
   if target not in ('bizops','claude-code'):raise PermissionError('Escalations follow the existing chain only')
   return self.call('/messages',{'to':target,'type':'alert','correlation_id':cid,'payload':text})
 class Control:
- def __init__(self,state=None,adapter=None,bus=None):
+ def __init__(self,state=None,adapter=None,bus=None,telegram=None):
   from backend import Adapter
-  self.a=adapter or Adapter('bizops');self.bus=bus or Bus()
+  self.a=adapter or Adapter('bizops');self.bus=bus or Bus();self.telegram=telegram or damian_telegram
   self.root=pathlib.Path(state or HOME/'.openclaw/state/project-dispatch');self.root.mkdir(parents=True,exist_ok=True)
   self.db=sqlite3.connect(self.root/'control.sqlite3');self.db.row_factory=sqlite3.Row
   self.db.execute('PRAGMA journal_mode=WAL');self.db.execute('PRAGMA synchronous=FULL')
-  self.db.executescript('CREATE TABLE IF NOT EXISTS runs (cid TEXT PRIMARY KEY, project TEXT, task TEXT, owner TEXT, executor TEXT, state TEXT, data TEXT, updated TEXT, UNIQUE(project,task)); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, cid TEXT, state TEXT, data TEXT, at TEXT); CREATE TABLE IF NOT EXISTS escalations (key TEXT PRIMARY KEY, kind TEXT, text TEXT, first_at TEXT, level INTEGER, sent_at TEXT, missed INTEGER DEFAULT 0, resolved_at TEXT, refused INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS gate_state (id TEXT PRIMARY KEY, state TEXT, detail TEXT, changed_at TEXT, announced INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS assignments (code TEXT PRIMARY KEY, tries INTEGER);')
+  self.db.executescript('CREATE TABLE IF NOT EXISTS runs (cid TEXT PRIMARY KEY, project TEXT, task TEXT, owner TEXT, executor TEXT, state TEXT, data TEXT, updated TEXT, UNIQUE(project,task)); CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, cid TEXT, state TEXT, data TEXT, at TEXT); CREATE TABLE IF NOT EXISTS escalations (key TEXT PRIMARY KEY, kind TEXT, text TEXT, first_at TEXT, level INTEGER, sent_at TEXT, missed INTEGER DEFAULT 0, resolved_at TEXT, refused INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS gate_state (id TEXT PRIMARY KEY, state TEXT, detail TEXT, changed_at TEXT, announced INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS assignments (code TEXT PRIMARY KEY, tries INTEGER); CREATE TABLE IF NOT EXISTS damian_alerts (key TEXT PRIMARY KEY, kind TEXT, text TEXT, first_at TEXT, sent_at TEXT, sends INTEGER DEFAULT 0); CREATE TABLE IF NOT EXISTS health (k TEXT PRIMARY KEY, v TEXT);')
   try:self.db.execute('ALTER TABLE escalations ADD COLUMN refused INTEGER DEFAULT 0');self.db.commit()
   except sqlite3.OperationalError:pass   # already there
-  self.seen=set();self.queue=[];self.gate_results=[];self.halt=None;self.undeliverable=[];self.problems=[]
+  self.seen=set();self.queue=[];self.gate_results=[];self.halt=None;self.undeliverable=[];self.problems=[];self.watch_rows=None
  def file_reader(self,executor):
   """Who opens a plan's work file. The verifier who wrote the plan gives the independence; this only supplies a login that
   can reach the file, for the same four read-only operations. Finance stays behind its wall until Damian rules otherwise."""
@@ -402,7 +441,7 @@ class Control:
    for kind,group in sorted(by.items()):
     lines.append(kind.upper()+' ('+str(len(group))+'):')
     for it in group[:12]:
-     line='- '+re.sub(r'(?<![-\w])[0-9a-fA-F]{32,}|\b\d{13,}\b','[id]',it[2])[:170]
+     line='- '+re.sub(r'(?<![-\w])[0-9a-fA-F]{32,}|\b\d{13,}\b','[id]',it[2])[:LINE_LIMIT.get(it[1],170)]
      if sum(len(x)+1 for x in lines)+len(line)>3300:break
      lines.append(line);named.append(it)
    left=len(items)-len(named)
@@ -422,7 +461,7 @@ class Control:
      # One line the relay will not carry must not silence the rest, or be recorded as delivered.
      landed=[];refused=[]
      for n,it in enumerate(named):
-      try:self.bus.alert(target,cid+'-'+str(n),header+'\n- '+it[1].upper()+': '+re.sub(r'(?<![-\w])[0-9a-fA-F]{32,}|\d{13,}','[id]',it[2])[:170]);landed.append(it)
+      try:self.bus.alert(target,cid+'-'+str(n),header+'\n- '+it[1].upper()+': '+re.sub(r'(?<![-\w])[0-9a-fA-F]{32,}|\d{13,}','[id]',it[2])[:LINE_LIMIT.get(it[1],170)]);landed.append(it)
       except BusRefused:refused.append(it)
      mark(landed+refused);self.undeliverable+=[it[2][:120] for it in refused]
      for it in refused:self.db.execute('UPDATE escalations SET refused=1 WHERE key=?',(it[0],))
@@ -430,12 +469,107 @@ class Control:
      sent.append({'target':target,'cid':cid,'items':len(landed),'refused':len(refused),'left':left})
    except Exception as e:sent.append({'target':target,'error':str(e)[:160],'items':len(items)})
   self.queue=[];return sent
+ def watch_read(self):
+  """dispatch_watch rows: a fresh local export when one is configured, otherwise read-only from Supabase."""
+  if WATCH_EXPORT:
+   p=pathlib.Path(WATCH_EXPORT)
+   if p.exists() and time.time()-p.stat().st_mtime<=WATCH_EXPORT_MAX_AGE:return json.loads(p.read_text())
+  return supabase_get('dispatch_watch?select=task_id,prefix,flags,flag_since,recovery_owner,recovery_action,checked_at')
+ def watch_key(self,code,pairs):
+  """One digest item per task and flag set. A set already told and still open keeps its key, so a flag clearing is not news;
+  a new flag, or one back with a new since, makes a new key, so Business Operations hears about it once."""
+  cur={f+'@'+s for f,s in pairs}
+  for r in self.db.execute("SELECT key FROM escalations WHERE resolved_at IS NULL AND key LIKE 'watch:%' ORDER BY first_at DESC"):
+   parts=r['key'].split(':',2)
+   if len(parts)==3 and parts[1]==code and cur<=set(parts[2].split(',')):return r['key']
+  return 'watch:'+code+':'+','.join(sorted(cur))
+ def watch(self):
+  """Read the dashboard's dispatch_watch each run and put every task with new or changed critical flags into the one digest to
+  Business Operations (flush). Dedupe, the 12-line cap, the relay-refusal fallback and the restatement to claude-code are flush's."""
+  self.watch_rows=None
+  try:
+   rows=self.watch_read()
+   if not isinstance(rows,list):raise RuntimeError('dispatch_watch did not return a list of rows')
+  except Exception:
+   # Unread is not resolved: keep every open watch item seen, so a read outage cannot sweep them away.
+   for r in self.db.execute("SELECT key FROM escalations WHERE resolved_at IS NULL AND key LIKE 'watch:%'"):self.seen.add(r['key'])
+   raise
+  flagged=0
+  for w in rows:
+   code=str(w.get('prefix') or w.get('task_id') or '').strip();pairs=watch_pairs(w)
+   if not code or not pairs:continue
+   self.flag(self.watch_key(code,pairs),'dispatch watch',watch_line(code,w,pairs));flagged+=1
+  self.watch_rows=rows
+  return {'tasks':len(rows),'critical':flagged}
+ def told_at(self,code,pair):
+  """When a digest naming this flag episode (flag@since) first went to Business Operations, or None."""
+  want=pair[0]+'@'+pair[1];at=[]
+  for r in self.db.execute("SELECT key,sent_at FROM escalations WHERE sent_at IS NOT NULL AND key LIKE 'watch:%'"):
+   parts=r['key'].split(':',2)
+   if len(parts)==3 and parts[1]==code and want in parts[2].split(','):at.append(r['sent_at'])
+  return min(at) if at else None
+ def fail_streak(self,ok):
+  """Consecutive failed runs, and when the streak began. A green run resets it."""
+  r=self.db.execute("SELECT v FROM health WHERE k='fail_streak'").fetchone();old=safe_json(r['v']) if r else {}
+  v={'n':0,'since':None} if ok else {'n':int(old.get('n') or 0)+1,'since':old.get('since') or now()}
+  self.db.execute("INSERT OR REPLACE INTO health(k,v) VALUES('fail_streak',?)",(json.dumps(v),));self.db.commit();return v
+ def level3_issues(self,hb,streak):
+  """What only Damian can clear: owner-only decisions, overdue work Business Operations was told about and did not recover, and a
+  dispatcher that keeps failing. Each is (key, kind, line)."""
+  out=[]
+  if streak['n']>=DOWN_AFTER_RUNS:
+   out.append(('dispatcher-down','dispatcher down',str(streak['n'])+' failed runs in a row since '+minute(streak['since'])+': '+'; '.join(str(e) for e in (hb.get('errors') or []))[:200]))
+  for r in self.db.execute("SELECT key,text FROM escalations WHERE resolved_at IS NULL AND kind IN ('owner-only action','owner decision needed') ORDER BY first_at"):
+   out.append(('esc:'+r['key'],'owner-only decision',r['text']))
+  for w in self.watch_rows or []:
+   code=str(w.get('prefix') or w.get('task_id') or '').strip();pairs=watch_pairs(w)
+   if not code or not pairs:continue
+   owner_=str(w.get('recovery_owner') or '').strip();action=re.sub(r'\s+',' ',html.unescape(str(w.get('recovery_action') or ''))).strip()
+   if owner_.lower()=='damian':
+    out.append(('watch-owner:'+code,'owner-only decision',code+' ('+', '.join(f for f,_ in pairs)+'): '+(action or 'waiting on Damian')));continue
+   since=dict(pairs).get('overdue')
+   if since is None or since=='unknown':continue
+   told=self.told_at(code,('overdue',since))
+   # One dispatcher cycle (15 min) after Business Operations was told, less a minute for launchd's start jitter.
+   if told and hours_since(iso_z(since))*60>=OVERDUE_GRACE_MIN and hours_since(told)*60>=OVERDUE_GRACE_MIN-1:
+    out.append(('overdue:'+code+':'+since,'overdue, no recovery',code+' overdue since '+since+', Business Operations told '+minute(told)+'. Recovery owner '+(owner_ or 'none')+': '+(action or 'none recorded')))
+  return out
+ def level3(self,hb):
+  """Level 3 of the escalation chain: one Telegram message a run to Damian, naming each open issue at most once per 4 hours."""
+  streak=self.fail_streak(hb.get('ok') is True);res={'enabled':LEVEL3,'fail_streak':streak['n'],'issues':0,'sent':0}
+  if not LEVEL3:return res
+  issues=self.level3_issues(hb,streak);res['issues']=len(issues);due=[]
+  for key,kind,line in issues:
+   r=self.db.execute('SELECT sent_at FROM damian_alerts WHERE key=?',(key,)).fetchone()
+   if r is None:self.db.execute('INSERT INTO damian_alerts(key,kind,text,first_at,sends) VALUES(?,?,?,?,0)',(key,kind,line,now()))
+   else:self.db.execute('UPDATE damian_alerts SET text=? WHERE key=?',(line,key))
+   if r is None or not r['sent_at'] or hours_since(r['sent_at'])>=LEVEL3_EVERY_HOURS:due.append((key,kind,line))
+  self.db.commit()
+  if not due:return res
+  lines=['PROJECT DISPATCH, LEVEL 3: this needs you. Owner-only decisions, overdue work Business Operations did not recover within '+str(OVERDUE_GRACE_MIN)+' minutes of being told, and dispatcher failures. Each item repeats every '+str(LEVEL3_EVERY_HOURS)+' hours while it stays open.']
+  named=[];full=False
+  for kind in ('dispatcher down','owner-only decision','overdue, no recovery'):
+   group=[d for d in due if d[1]==kind]
+   if not group or full:continue
+   lines.append(kind.upper()+' ('+str(len(group))+'):')
+   for d in group:
+    line='- '+re.sub(r'\s+',' ',d[2])[:220]
+    if sum(len(x)+1 for x in lines)+len(line)>3500:full=True;break
+    lines.append(line);named.append(d)
+  left=len(due)-len(named)
+  if left:lines.append(str(left)+' more in the next message.')
+  lines.append('Detail: the dashboard Waiting On You list and dispatch watch; dispatcher state in latest-run.json.')
+  try:self.telegram('\n'.join(lines))
+  except Exception as e:
+   # Never the exception text: a failed Telegram call can carry the bot URL, and that holds the token.
+   res['error']=type(e).__name__+(' '+str(e.code) if isinstance(getattr(e,'code',None),int) else '');return res
+  at=now()
+  for d in named:self.db.execute('UPDATE damian_alerts SET sent_at=?,sends=sends+1 WHERE key=?',(at,d[0]))
+  self.db.commit();res['sent']=len(named);res['left']=left;return res
  def register(self):
   """Register statuses from the dashboard cache, read-only. Unreadable or duplicated means unknown, and unknown releases nothing."""
   try:
-   key=subprocess.check_output(['/usr/bin/security','find-generic-password','-s','exec-dashboard-supabase-service','-w'],stderr=subprocess.DEVNULL,text=True,timeout=20).strip()
-   url=os.environ.get('EOD_SUPABASE_URL','https://hjycuzfhjokccpygvpvo.supabase.co')+'/rest/v1/decisions?select=adr,status'
-   with urllib.request.urlopen(urllib.request.Request(url,headers={'apikey':key,'Authorization':'Bearer '+key}),timeout=30) as r:rows=json.load(r)
+   rows=supabase_get('decisions?select=adr,status')
    out={}
    for x in rows:out[x['adr']]=None if x['adr'] in out else x['status']
    return out
@@ -729,7 +863,7 @@ class Control:
   by=Counter(x['state'] for x,_ in rows)
   sent24=self.db.execute("SELECT COUNT(*) n FROM events WHERE state='dispatched' AND at>=?",((dt.datetime.now(dt.timezone.utc)-dt.timedelta(hours=24)).isoformat(),)).fetchone()['n']
   totals={'closed_verified':sorted(set(verified)),'awaiting_check':[y.get('prefix') for x,y in rows if x['state']=='awaiting_verification'],'blocked':by['blocked'],'stalled':by['stalled'],'in_progress':sum(by[k] for k in OCCUPYING),'sent_24h':sent24}
-  hb={'at':now(),'ok':not failed,'errors':failed,'halt':self.halt,'states':dict(Counter(str(x.get('state')).split(':')[0] for x in d)),'dispatched':[x.get('prefix') for x in d if x.get('state')=='dispatched'],'gates':self.gate_results,'verified':result.get('verified') or [],'totals':totals,'escalated':esc,'open_escalations':o['n'],'oldest_escalation':o['f'],'undeliverable':self.undeliverable}
+  hb={'at':now(),'ok':not failed,'errors':failed,'halt':self.halt,'states':dict(Counter(str(x.get('state')).split(':')[0] for x in d)),'dispatched':[x.get('prefix') for x in d if x.get('state')=='dispatched'],'gates':self.gate_results,'verified':result.get('verified') or [],'totals':totals,'escalated':esc,'watch':result.get('watch'),'open_escalations':o['n'],'oldest_escalation':o['f'],'undeliverable':self.undeliverable}
   (self.root/'latest-run.json').write_text(json.dumps(hb,indent=2));return hb
 
 def cycle(c):
@@ -749,6 +883,7 @@ def cycle(c):
   rearm();return c.scan(True)
  scanned=phase('scan',bounded_scan);result['dispatch']=scanned or []
  signal.alarm(0)
+ result['watch']=phase('watch',c.watch)   # the dashboard's dispatch_watch flags join this run's digest
  result['verified']=phase('verify',c.verify_ready) or []
  result['report']=phase('report',c.report)   # before the digest, so a report failure still reaches someone
  partial=scanned is None or any(x.get('state')=='PRIMARY_TOOL_ACCESS_FAILED' for x in result['dispatch'])
@@ -757,6 +892,14 @@ def cycle(c):
  except Exception as e:   # never leave the last green file standing
   result['heartbeat']={'at':now(),'ok':False,'errors':['heartbeat: '+str(e)[:200]]}
   (c.root/'latest-run.json').write_text(json.dumps(result['heartbeat']))
+ # Level 3 last, so it can see whether this run failed. A message that did not reach Damian makes the run red.
+ hb=result['heartbeat']
+ try:
+  hb['damian']=c.level3(hb)
+  if hb['damian'].get('error'):hb.setdefault('errors',[]).append('a level-3 alert could not reach Damian: '+hb['damian']['error']);hb['ok']=False
+ except Exception as e:
+  hb.setdefault('errors',[]).append('level 3: '+type(e).__name__+': '+str(e)[:160]);hb['ok']=False
+ (c.root/'latest-run.json').write_text(json.dumps(hb,indent=2))
  return result
 def run_failure(result):
  """The one stderr line for a red run, or None when the run was green. launchd and log readers see only the exit status and the log."""
