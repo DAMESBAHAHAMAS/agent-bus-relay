@@ -6,6 +6,19 @@ ALLOWED_READS={'project_task','project_task_comments','workdrive_text','workdriv
 def acceptance_hash(task):
  from control import requirements
  return hashlib.sha256(json.dumps(requirements(task),sort_keys=True).encode()).hexdigest()
+def who(v):
+ """One spelling per identity: 'Biz Operations', 'Business Operations' and 'bizops' are the same; so are 'Claude Code' and 'claude-code'."""
+ from control import ACTORS,FUNCTIONS
+ s=str(v or '').strip()
+ return re.sub(r'[^a-z0-9]','',(ACTORS.get(s) or FUNCTIONS.get(s) or s).casefold())
+def closer_check(plan,task,row):
+ """SA5-T225 P-D: a task is closed only by someone who did not do it. The plan must name verified_by, and it must differ from the
+ task's Execution Actor and from the dispatch executor. Refused before anything is read or written."""
+ verifier=str(plan.get('verified_by') or '').strip()
+ if not verifier:raise ValueError('Closure refused: the plan names no verified_by')
+ doers={who(task.get('execution_actor')),who(row['executor'])}-{''}
+ if who(verifier) in doers:raise ValueError('Closure refused: verified_by ('+verifier+') is the executor; a different agent or a person must verify')
+ return verifier
 def verify(control,cid,plan_name,close=False):
  from control import closed
  if not re.fullmatch(r'[A-Za-z0-9_-]+\.json',plan_name):raise ValueError('Plan filename only')
@@ -17,6 +30,7 @@ def verify(control,cid,plan_name,close=False):
  if data['mode']!='execution':raise ValueError('Proof cannot close business tasks')
  if plan['project']!=row['project'] or plan['task']!=row['task'] or plan['acceptance_sha256']!=acceptance_hash(task):raise ValueError('Task/acceptance changed; review verifier')
  if not plan.get('checks'):raise ValueError('Nonempty acceptance checks required')
+ verifier=closer_check(plan,task,row) if close else str(plan.get('verified_by') or '').strip()
  evidence=[]
  for check in plan['checks']:
   if check['operation'] not in ALLOWED_READS:raise ValueError('Unapproved verification operation')
@@ -37,7 +51,7 @@ def verify(control,cid,plan_name,close=False):
   evidence.append({'criterion':check['criterion'],'operation':check['operation'],'params':check['params'],'passed':passed,'actual_sha256':hashlib.sha256(json.dumps(actual,sort_keys=True).encode()).hexdigest()})
  if not all(e['passed'] for e in evidence):
   data['verification']={'passed':False,'checks':evidence};control.save(cid,'awaiting_verification',data);raise ValueError('Acceptance check failed; task remains open')
- data['verification']={'passed':True,'plan':plan_name,'acceptance_sha256':acceptance_hash(task),'checks':evidence}
+ data['verification']={'passed':True,'plan':plan_name,'acceptance_sha256':acceptance_hash(task),'checks':evidence,'verified_by':verifier}
  control.save(cid,'verified_deliverable',data)
  control.journal(next(r for r in control.rows() if r['cid']==cid))
  if close:
@@ -46,7 +60,8 @@ def verify(control,cid,plan_name,close=False):
   if acceptance_hash(fresh)!=plan['acceptance_sha256']:raise ValueError('Acceptance changed before closure')
   if not closed(fresh):
    if data.get('close_attempted'):raise RuntimeError('WRITE_OUTCOME_UNKNOWN: reconcile existing close; no automatic retry')
-   data['close_attempted']=True;control.save(cid,'verified_deliverable',data)
+   # The close is still written with the dispatcher's bizops Zoho credential, the executor's own. A separate verifier identity is an owner step.
+   data['close_attempted']=True;data['verification']['closed_with']='bizops Zoho credential (shared with the executor; separate verifier identity pending)';control.save(cid,'verified_deliverable',data)
    control.a.projects('PATCH',f"projects/{row['project']}/tasks/{row['task']}",{'completion_percentage':100})
   after=control.task(row['project'],row['task'])
   if not closed(after):raise RuntimeError('WRITE_OUTCOME_UNKNOWN: closure not independently confirmed')
