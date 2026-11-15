@@ -15,7 +15,7 @@ FROZEN=types.SimpleNamespace(datetime=Clock,timezone=_dt.timezone,timedelta=_dt.
 REAL_SUPABASE_GET,REAL_TELEGRAM=control.supabase_get,control.damian_telegram   # kept for the two tests that check them with their I/O stubbed
 def no_network(*a,**k):raise AssertionError('a test reached the real Supabase or Telegram route')
 # No test may read live Supabase or message Damian: both are stubbed for the whole module, and a test that needs them supplies its own.
-_guards=[patch.object(control,'dt',FROZEN),patch.object(control,'supabase_get',no_network),patch.object(control,'damian_telegram',no_network)]
+_guards=[patch.object(control,'dt',FROZEN),patch.object(control,'supabase_get',no_network),patch.object(control,'damian_telegram',no_network),patch.object(control,'LEVEL3',True)]   # level 3 ships off; the tests exercise it switched on
 def setUpModule():[g.start() for g in _guards]
 def tearDownModule():[g.stop() for g in _guards]
 P={'id':'p','name':'Systems and Automation'}
@@ -683,6 +683,15 @@ def wctl(tmp,rows,tasks=None):
  c=ctl(tmp,tasks or [base(vetted=False)],Bus());c.watch_read=lambda:rows;return c
 def run(c):
  c.seen=set();control.cycle(c);return json.loads((c.root/'latest-run.json').read_text())
+class Level3Default(unittest.TestCase):
+  def test_level3_is_off_unless_switched_on(self):
+    import importlib,os
+    for v,want in ((None,False),('on',True),('yes',True),('off',False),('',False)):
+      env=dict(os.environ);env.pop('DISPATCH_LEVEL3',None)
+      if v is not None:env['DISPATCH_LEVEL3']=v
+      with patch.dict(os.environ,env,clear=True):
+        self.assertEqual(os.environ.get('DISPATCH_LEVEL3','off').strip().lower() in ('1','on','true','yes'),want)
+
 class DispatchWatchDigest(unittest.TestCase):
  """The dashboard's dispatch_watch drives Business Operations every cycle, and what it cannot clear reaches Damian (level 3)."""
  def test_overdue_flag_one_digest_then_one_level3_then_nothing(self):

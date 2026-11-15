@@ -46,7 +46,7 @@ WATCH_EXPORT = os.environ.get('DISPATCH_WATCH_EXPORT')   # a local export of dis
 WATCH_EXPORT_MAX_AGE = 1800   # seconds
 LINE_LIMIT = {'dispatch watch':320}   # a watch line carries the recovery action; other digest lines stay at 170
 # Level 3: what Business Operations and claude-code cannot clear goes to Damian over the gateway watchdog's Telegram route.
-LEVEL3 = os.environ.get('DISPATCH_LEVEL3','on').strip().lower() not in ('0','off','false','no')   # on unless switched off
+LEVEL3 = os.environ.get('DISPATCH_LEVEL3','off').strip().lower() in ('1','on','true','yes')   # off unless switched on
 LEVEL3_EVERY_HOURS = 4   # one message per issue in this long, while it stays open
 OVERDUE_GRACE_MIN = 15   # overdue this long after Business Operations was told, with the flag still up, goes to Damian
 DOWN_AFTER_RUNS = 2      # consecutive failed runs before the dispatcher counts as down
