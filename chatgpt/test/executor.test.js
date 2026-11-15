@@ -11,6 +11,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "exec-test-"));
 process.env.BUS_EXEC_ROOT = path.join(TMP, "exec");
 process.env.BUS_DEV_ROOT = path.join(TMP, "Developer");
 process.env.BUS_DELEGATION_SWITCH = path.join(TMP, "delegation.on");
+process.env.BUS_GIT_FILE_PROTOCOL = "always";   // the throwaway origin is a local path; the bridge's default is protocol.file.allow=never
 const executor = require("../executor");
 
 const g = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: Object.assign({}, process.env, {

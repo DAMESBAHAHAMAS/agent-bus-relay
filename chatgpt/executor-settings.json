@@ -4,7 +4,6 @@
     "disableBypassPermissionsMode": "disable",
     "allow": [
       "Read", "Glob", "Grep", "WebSearch",
-      "Edit(~/.agent-bus/exec/**)", "Write(~/.agent-bus/exec/**)",
       "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
       "Bash(git branch --show-current)", "Bash(git branch --list:*)",
       "Bash(git add:*)", "Bash(git commit:*)",
@@ -16,6 +15,7 @@
       "Read(~/Developer/local-credentials/**)", "Read(~/Library/Keychains/**)", "Read(**/.env)", "Read(**/.env.*)",
       "Edit(~/Developer/agent-bus-relay/**)", "Write(~/Developer/agent-bus-relay/**)",
       "Edit(~/.agent-bus/claude-code/**)", "Write(~/.agent-bus/claude-code/**)",
+      "Edit(~/.agent-bus/exec/.running.json)", "Write(~/.agent-bus/exec/.running.json)",
       "Edit(**/.claude/**)", "Write(**/.claude/**)", "Edit(**/CLAUDE.md)", "Write(**/CLAUDE.md)", "Edit(**/AGENTS.md)", "Write(**/AGENTS.md)",
       "Edit(**/.github/workflows/**)", "Write(**/.github/workflows/**)", "Edit(**/render.yaml)", "Write(**/render.yaml)",
       "Edit(**/.git/hooks/**)", "Write(**/.git/hooks/**)", "Edit(**/.git/config)", "Write(**/.git/config)",

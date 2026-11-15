@@ -15,13 +15,14 @@ const g = (cwd, ...a) => execFileSync("git", a, { cwd, encoding: "utf8", env: Ob
   GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" }) }).trim();
 const after = (argv, flag) => argv[argv.indexOf(flag) + 1];
 
-test("the static settings: no writes under ~/Developer, git --output denied, sandbox on with no unsandboxed escape", () => {
+test("the static settings: no file-tool writes of their own, git --output denied, sandbox on with no unsandboxed escape", () => {
   const s = JSON.parse(fs.readFileSync(executor.SETTINGS, "utf8"));
   const allow = s.permissions.allow, deny = s.permissions.deny;
   assert.equal(s.permissions.defaultMode, "dontAsk");
   assert.ok(!allow.some((r) => /^(Edit|Write)\(~\/Developer/.test(r)), "no Edit/Write allow rule under ~/Developer: " + allow.join(", "));
-  assert.ok(allow.includes("Write(~/.agent-bus/exec/**)"));
-  for (const r of ["Bash(git * --output*)", "Bash(git *--output=*)", "Edit(**/.git/hooks/**)", "Write(**/.git/config)", "Write(~/Developer/agent-bus-relay/**)"])
+  assert.ok(!allow.some((r) => /^(Edit|Write)\b/.test(r)), "no static Edit/Write allow rule (not ~/.agent-bus/exec/**): each run gets its own folder only: " + allow.join(", "));
+  for (const r of ["Bash(git * --output*)", "Bash(git *--output=*)", "Edit(**/.git/hooks/**)", "Write(**/.git/config)", "Write(~/Developer/agent-bus-relay/**)",
+    "Edit(~/.agent-bus/exec/.running.json)", "Write(~/.agent-bus/exec/.running.json)"])
     assert.ok(deny.includes(r), "denied: " + r);
   assert.ok(!allow.some((r) => /^Bash\(git branch:/.test(r)), "git branch is read-only (no prefix rule that admits -D / -f)");
   assert.ok(!allow.some((r) => /git (switch|checkout|push)/.test(r)), "no branch switch or push rule for the model");
@@ -46,19 +47,34 @@ test("a repository run: sandbox writes only the worktree's git folder and its ow
   assert.equal(after(argv, "--tools"), "Read,Glob,Grep,Write,Edit,Bash,WebSearch", "no subagent, scheduler, trigger or messaging tools");
   const s = JSON.parse(after(argv, "--settings"));
   const f = s.sandbox.filesystem;
-  assert.deepEqual(f.allowWrite.sort(), [gitDir, path.join(commonDir, "objects"), path.join(commonDir, "refs", "heads", "chatgpt"),
+  const runDir = path.join(TMP, "exec", "2000002");
+  assert.deepEqual(f.allowWrite.slice().sort(), [runDir, gitDir, path.join(commonDir, "objects"), path.join(commonDir, "refs", "heads", "chatgpt"),
     path.join(commonDir, "logs", "refs", "heads", "chatgpt")].sort());
-  for (const p of [path.join(wt, ".git"), path.join(gitDir, "commondir"), path.join(gitDir, "gitdir"), path.join(gitDir, "config.worktree"),
+  for (const p of [path.join(wt, ".git"), executor.MARKER, path.join(gitDir, "commondir"), path.join(gitDir, "gitdir"), path.join(gitDir, "config.worktree"),
     path.join(commonDir, "config"), path.join(commonDir, "hooks")]) assert.ok(f.denyWrite.includes(p), "sandbox denyWrite: " + p);
+  assert.ok(!f.allowWrite.some((p) => p === path.join(TMP, "exec") || (p.startsWith(path.join(TMP, "exec") + path.sep) && p !== runDir)), "nothing else under the exec root is writable");
+  const fileAllow = s.permissions.allow.filter((r) => /^(Edit|Write)\(/.test(r));
+  assert.deepEqual(fileAllow.sort(), ["Edit(/" + runDir + "/**)", "Write(/" + runDir + "/**)"], "file tools: the run's own folder only");
+  for (const r of ["Edit(/" + executor.MARKER + ")", "Write(/" + executor.MARKER + ")"]) assert.ok(s.permissions.deny.includes(r), "denied: " + r);
   assert.ok(!f.allowWrite.some((p) => p === commonDir || p === src || p === path.join(TMP, "Developer")), "the repository and ~/Developer are not writable");
   assert.ok(s.permissions.deny.includes("Write(/" + path.join(wt, ".git") + ")"), "the file tools cannot rewrite the worktree's .git pointer");
 });
 
-test("a run with no repository: sandbox writes only the cwd", () => {
+test("a run with no repository: sandbox and file tools write only the run's own folder, never another run's or the marker", () => {
   const cwd = path.join(TMP, "exec", "3000003");
   const s = JSON.parse(after(executor.execArgs("P", { cwd }), "--settings"));
-  assert.deepEqual(s.sandbox.filesystem.allowWrite, []);
+  assert.deepEqual(s.sandbox.filesystem.allowWrite, [cwd]);
+  assert.ok(s.sandbox.filesystem.denyWrite.includes(executor.MARKER));
+  assert.deepEqual(s.permissions.allow.filter((r) => /^(Edit|Write)\(/.test(r)).sort(), ["Edit(/" + cwd + "/**)", "Write(/" + cwd + "/**)"]);
+  assert.equal(executor.MARKER, path.join(TMP, "exec", ".running.json"));
   assert.equal(s.sandbox.enabled, true);
+});
+
+test("runFolder: the first folder under the exec root, or the cwd itself outside it", () => {
+  assert.equal(executor.runFolder(path.join(TMP, "exec", "5000005", "demo")), path.join(TMP, "exec", "5000005"));
+  assert.equal(executor.runFolder(path.join(TMP, "exec", "5000005")), path.join(TMP, "exec", "5000005"));
+  assert.equal(executor.runFolder(path.join(TMP, "elsewhere", "x")), path.join(TMP, "elsewhere", "x"));
+  assert.equal(executor.runFolder(path.join(TMP, "exec")), path.join(TMP, "exec"));
 });
 
 test("prepareRepo returns the git folders the sandbox needs", async () => {
