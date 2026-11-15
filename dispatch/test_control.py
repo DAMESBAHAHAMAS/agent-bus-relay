@@ -641,8 +641,9 @@ class RunExitStatus(unittest.TestCase):
  """A red run must be visible to launchd and the log, not only in latest-run.json: one timestamped ERROR line and exit 2."""
  LINE=r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z ERROR project-dispatch run failed: '
  def _main(self,c,result):
-  import io,contextlib
-  out,err=io.StringIO(),io.StringIO()
+  import io,contextlib,gc
+  # Finalise connections other tests left for the garbage collector now, so their ResourceWarnings never land in the captured stderr.
+  gc.collect();out,err=io.StringIO(),io.StringIO()
   with patch.object(control,'Control',lambda state=None:c),patch.object(control,'cycle',lambda c_:result),patch.object(control.signal,'signal'),patch.object(control.signal,'alarm'),patch.object(control.sys,'argv',['control.py','run']),contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
    try:control.main();code=0
    except SystemExit as e:code=e.code

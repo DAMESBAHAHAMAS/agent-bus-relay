@@ -64,6 +64,40 @@ class Tests(unittest.TestCase):
   self.a.t['execution_actor']='Biz Operations';self.plan['verified_by']='bizops';self.save()
   with self.assertRaisesRegex(ValueError,'is the executor'):verification.verify(self.c,'x','task.json',True)
   self.assertEqual(self.a.writes,0)
+ def test_close_refused_for_every_spelling_of_the_execution_actor(self):   # SA5-T225 alias-casefold
+  self.a.t['execution_actor']='Biz Operations'
+  for name in ('Biz-Operations','biz operations','Business operations','bizops agent','BIZ OPERATIONS','Biz Operations Agent','Business-Operations agent','  biz_ops  ','BizOps'):
+   with self.subTest(name=name):
+    self.plan['verified_by']=name;self.save()
+    with self.assertRaisesRegex(ValueError,'is the executor'):verification.verify(self.c,'x','task.json',True)
+  self.assertEqual(self.a.writes,0)
+ def test_close_refused_for_every_spelling_of_the_dispatch_executor(self):   # executor here is 'systems' (SysAuto)
+  for name in ('sys-auto','SYSAUTO','sysauto agent','systems and automation','Systems & Automation Agent','Systems.'):
+   with self.subTest(name=name):
+    self.plan['verified_by']=name;self.save()
+    with self.assertRaisesRegex(ValueError,'is the executor'):verification.verify(self.c,'x','task.json',True)
+  self.assertEqual(self.a.writes,0)
+ def test_unknown_actor_name_is_matched_by_its_normalised_form(self):
+  self.a.t['execution_actor']='Claude Code'
+  for name in ('claude-code','CLAUDE CODE','claude code agent','Claude_Code.'):
+   with self.subTest(name=name):
+    self.plan['verified_by']=name;self.save()
+    with self.assertRaisesRegex(ValueError,'is the executor'):verification.verify(self.c,'x','task.json',True)
+  self.assertEqual(self.a.writes,0)
+ def test_punctuation_only_verifier_counts_as_none(self):
+  for name in ('-','  ','...','_ / _'):
+   with self.subTest(name=name):
+    self.plan['verified_by']=name;self.save()
+    with self.assertRaisesRegex(ValueError,'no verified_by'):verification.verify(self.c,'x','task.json',True)
+  self.assertEqual(self.a.writes,0)
+ def test_a_different_agent_still_closes(self):
+  self.a.t['execution_actor']='Biz Operations';self.plan['verified_by']='claude-code agent';self.save()
+  self.assertEqual(verification.verify(self.c,'x','task.json',True)['state'],'completed');self.assertEqual(self.a.writes,1)
+ def test_who_and_norm(self):
+  for name in ('Biz Operations','Biz-Operations','biz operations','Business operations','bizops agent','bizops','BIZOPS'):
+   self.assertEqual(verification.who(name),'bizops',name)
+  self.assertEqual(verification.who('Code Dev'),'codedev');self.assertEqual(verification.who('code-development agent'),'codedev')
+  self.assertEqual(verification.norm('Claude Code Agent'),'claudecode');self.assertEqual(verification.norm('Agent'),'agent');self.assertEqual(verification.norm(None),'')
  def test_verify_without_close_records_verifier_and_writes_nothing(self):
   self.assertEqual(verification.verify(self.c,'x','task.json')['state'],'verified_deliverable');self.assertEqual(self.a.writes,0)
  def test_no_executor_code(self):
