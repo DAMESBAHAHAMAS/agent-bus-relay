@@ -1,8 +1,23 @@
 import sys
 sys.dont_write_bytecode=True
-import json,re,tempfile,unittest
+import json,re,tempfile,unittest,types,time,datetime as _dt
 from unittest.mock import patch
 import control
+class Clock(_dt.datetime):
+ """The tests are dated inside Damian's baseline window (control.BASELINE_WINDOW), so they do not start failing the day it ends.
+ Only the date is fixed: the clock still ticks from that point, so ages and the order of timestamps behave as they do live."""
+ ORIGIN=_dt.datetime(2026,11,5,12,0,tzinfo=_dt.timezone.utc);START=time.monotonic()
+ @classmethod
+ def now(cls,tz=None):
+  t=cls.ORIGIN+_dt.timedelta(seconds=time.monotonic()-cls.START)
+  return t.astimezone(tz) if tz else t.replace(tzinfo=None)
+FROZEN=types.SimpleNamespace(datetime=Clock,timezone=_dt.timezone,timedelta=_dt.timedelta,date=_dt.date)
+REAL_SUPABASE_GET,REAL_TELEGRAM=control.supabase_get,control.damian_telegram   # kept for the two tests that check them with their I/O stubbed
+def no_network(*a,**k):raise AssertionError('a test reached the real Supabase or Telegram route')
+# No test may read live Supabase or message Damian: both are stubbed for the whole module, and a test that needs them supplies its own.
+_guards=[patch.object(control,'dt',FROZEN),patch.object(control,'supabase_get',no_network),patch.object(control,'damian_telegram',no_network),patch.object(control,'LEVEL3',True)]   # level 3 ships off; the tests exercise it switched on
+def setUpModule():[g.start() for g in _guards]
+def tearDownModule():[g.stop() for g in _guards]
 P={'id':'p','name':'Systems and Automation'}
 def task(**extra):return {'id':'t','name':'M1-TL1-T1 — sample','description':'DEFINITION OF DONE: artifact exists\nEVIDENCE REQUIRED: independent read\nDEPENDENCIES: None','vetted':True,'priority':'high','start_date':'2026-11-01','end_date':'2026-11-06',**extra}
 class Fake:
@@ -87,7 +102,8 @@ class Zoho:
 def ctl(tmp,tasks,bus=None,gates='[]',**kw):
  import pathlib
  z=Zoho(tasks,**kw);c=control.Control(tmp,adapter=z,bus=bus or Bus());c.projects=lambda:[{'id':z.pid,'name':z.name}];c.journal=lambda r:None
- p=pathlib.Path(tmp)/'gates.json';p.write_text(gates);c.gates_path=str(p);c.register=lambda:{'ADR-1':'Submitted','ADR-2':'Approved'};return c
+ p=pathlib.Path(tmp)/'gates.json';p.write_text(gates);c.gates_path=str(p);c.register=lambda:{'ADR-1':'Submitted','ADR-2':'Approved'}
+ c.watch_read=lambda:[];c.to_damian=[];c.telegram=c.to_damian.append;c.rotate_audit=lambda:None;return c
 OLD=lambda h:(control.dt.datetime.now(control.dt.timezone.utc)-control.dt.timedelta(hours=h)).isoformat()
 def row(c,task='t',state='blocked',cid='pd-old',project='1',owner_='compliance',**d):
  data={'mode':'execution','requested_at':control.now(),'attempt':1,'task_name':'x','blocked_on':[],'wait_snapshot':[],**d}
@@ -657,4 +673,141 @@ class RunExitStatus(unittest.TestCase):
   with tempfile.TemporaryDirectory() as tmp:
    code,out,err=self._main(ctl(tmp,[base()],Bus()),{'receipts':[],'dispatch':[],'errors':[],'heartbeat':{'ok':True,'errors':[]}})
    self.assertEqual(code,0);self.assertEqual(err,'')
+def ago(h):return (control.dt.datetime.now(control.dt.timezone.utc)-control.dt.timedelta(hours=h)).isoformat().replace('+00:00','Z')   # Supabase's form
+def later(minutes):return patch.object(Clock,'ORIGIN',Clock.ORIGIN+_dt.timedelta(minutes=minutes))
+ACTION='Past due: finish, or agree a new date with Damian (dates are never moved without him).'
+def wrow(prefix='SA5-T900',flags=('overdue',),since=None,owner='Biz Operations',action=ACTION):
+ since=since or ago(1)
+ return {'task_id':'t-'+prefix,'prefix':prefix,'flags':list(flags),'flag_since':{f:since for f in flags},'recovery_owner':owner,'recovery_action':action,'checked_at':control.now()}
+def wctl(tmp,rows,tasks=None):
+ c=ctl(tmp,tasks or [base(vetted=False)],Bus());c.watch_read=lambda:rows;return c
+def run(c):
+ c.seen=set();control.cycle(c);return json.loads((c.root/'latest-run.json').read_text())
+class Level3Default(unittest.TestCase):
+  def test_level3_is_off_unless_switched_on(self):
+    import importlib,os
+    for v,want in ((None,False),('on',True),('yes',True),('off',False),('',False)):
+      env=dict(os.environ);env.pop('DISPATCH_LEVEL3',None)
+      if v is not None:env['DISPATCH_LEVEL3']=v
+      with patch.dict(os.environ,env,clear=True):
+        self.assertEqual(os.environ.get('DISPATCH_LEVEL3','off').strip().lower() in ('1','on','true','yes'),want)
+
+class DispatchWatchDigest(unittest.TestCase):
+ """The dashboard's dispatch_watch drives Business Operations every cycle, and what it cannot clear reaches Damian (level 3)."""
+ def test_overdue_flag_one_digest_then_one_level3_then_nothing(self):
+  # The original failure: an overdue dispatched task, and nobody hears. Now one digest to bizops, one level-3 message after 15 min, then quiet.
+  with tempfile.TemporaryDirectory() as tmp:
+   c=wctl(tmp,[wrow(since=ago(0.05))]);b=c.bus
+   hb=run(c);self.assertTrue(hb['ok'],hb['errors'])
+   self.assertEqual(len(b.alerts),1);to,cid,text=b.alerts[0];self.assertEqual(to,'bizops')
+   self.assertIn('DISPATCH WATCH (1):',text);self.assertRegex(text,r'SA5-T900: overdue since \d{4}-\d\d-\d\dT\d\d:\d\dZ\. Recovery owner: Biz Operations\. Recovery action: Past due: finish')
+   self.assertEqual(c.to_damian,[]);self.assertEqual(hb['watch'],{'tasks':1,'critical':1})
+   with later(15):hb=run(c)
+   self.assertTrue(hb['ok'],hb['errors']);self.assertEqual(len(b.alerts),1)
+   self.assertEqual(len(c.to_damian),1);self.assertIn('OVERDUE, NO RECOVERY (1):',c.to_damian[0]);self.assertIn('SA5-T900 overdue since',c.to_damian[0]);self.assertIn('Recovery owner Biz Operations: Past due',c.to_damian[0])
+   self.assertEqual(hb['damian']['sent'],1)
+   with later(30):hb=run(c)
+   self.assertEqual(len(b.alerts),1);self.assertEqual(len(c.to_damian),1);self.assertEqual(hb['damian']['sent'],0)
+ def test_level3_waits_for_a_cycle_after_bizops_was_told(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=wctl(tmp,[wrow(since=ago(30))]);run(c);self.assertEqual(c.to_damian,[])   # overdue for a day, but bizops only heard now
+   with later(10):run(c)
+   self.assertEqual(c.to_damian,[])
+   with later(15):run(c)
+   self.assertEqual(len(c.to_damian),1)
+ def test_a_new_flag_is_news_and_a_clear_is_not(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   since=ago(1);rows=[wrow(since=since)];c=wctl(tmp,rows);b=c.bus
+   c.watch();c.flush();self.assertEqual(len(b.alerts),1)
+   rows[0]=dict(wrow(flags=('overdue','no_thread'),since=since));c.watch_read=lambda:rows
+   c.seen=set();c.watch();c.flush();self.assertEqual(len(b.alerts),2);self.assertIn('no_thread since',b.alerts[1][2]);self.assertIn('overdue since',b.alerts[1][2])
+   rows[0]=wrow(since=since);c.seen=set();c.watch();c.flush();self.assertEqual(len(b.alerts),2)   # no_thread cleared: not news
+   c.seen=set();c.watch();c.flush();self.assertEqual(len(b.alerts),2)
+   rows[0]=wrow(flags=('overdue','no_thread'),since=since);rows[0]['flag_since']['no_thread']=ago(0.1);c.seen=set();c.watch();c.flush()
+   self.assertEqual(len(b.alerts),3)   # back again with a new since: news
+ def test_only_critical_flags_are_sent(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=wctl(tmp,[wrow(flags=('no_evidence','unverified','blocked'))]);c.watch();c.flush();self.assertEqual(c.bus.alerts,[])
+   for f in control.WATCH_CRITICAL:
+    c=wctl(tmp+'/'+f,[wrow(prefix='X1-T'+f,flags=(f,))]);c.watch();c.flush();self.assertIn(f+' since',c.bus.alerts[0][2],f)
+ def test_many_tasks_make_one_digest_a_cycle(self):
+  rows=[wrow(prefix='AB9-T'+str(i)) for i in range(21)]
+  with tempfile.TemporaryDirectory() as tmp:
+   c=wctl(tmp,rows);seen=set()
+   for n in range(4):
+    c.seen=set();c.watch();c.flush();self.assertEqual(len(c.bus.alerts),n+1)
+    seen|=set(re.findall(r'AB9-T\d+',c.bus.alerts[-1][2]))
+    if len(seen)==21:break
+   self.assertEqual(len(seen),21)
+ def test_owner_decision_goes_to_damian_at_once_and_repeats_every_4_hours(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=wctl(tmp,[wrow(owner='Damian',action='Waiting on Damian: Confirm the page inventory')]);run(c)
+   self.assertEqual(len(c.bus.alerts),1);self.assertEqual(len(c.to_damian),1);self.assertIn('OWNER-ONLY DECISION (1):',c.to_damian[0]);self.assertIn('Confirm the page inventory',c.to_damian[0])
+   with later(3*60):run(c)
+   self.assertEqual(len(c.to_damian),1)
+   with later(4*60+1):run(c)
+   self.assertEqual(len(c.to_damian),2)
+ def test_dispatcher_owner_only_holds_reach_damian(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=wctl(tmp,[],tasks=[base(name='Publish the page')]);run(c)
+   self.assertTrue(alerts(c.bus,'OWNER-ONLY ACTION'));self.assertEqual(len(c.to_damian),1);self.assertIn('AB1-T1 Publish the page',c.to_damian[0])
+ def test_dispatcher_down_after_two_failed_runs_once_per_4_hours(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=wctl(tmp,[wrow(since=ago(0.05))]);run(c);self.assertEqual(len(c.bus.alerts),1)
+   def down():raise RuntimeError('dispatch_watch GET HTTP 503')
+   c.watch_read=down
+   with later(15):hb=run(c)
+   self.assertFalse(hb['ok']);self.assertEqual(hb['damian']['fail_streak'],1);self.assertEqual(c.to_damian,[])
+   with later(30):hb=run(c)
+   self.assertEqual(hb['damian']['fail_streak'],2);self.assertEqual(len(c.to_damian),1)
+   self.assertIn('DISPATCHER DOWN (1):',c.to_damian[0]);self.assertIn('2 failed runs in a row',c.to_damian[0]);self.assertIn('dispatch_watch GET HTTP 503',c.to_damian[0])
+   with later(45):run(c)
+   self.assertEqual(len(c.to_damian),1)
+   # The outage did not sweep the open watch item away as resolved.
+   self.assertIsNone(c.db.execute("SELECT resolved_at FROM escalations WHERE key LIKE 'watch:%'").fetchone()[0])
+   c.watch_read=lambda:[wrow(since=ago(0.05))]
+   with later(60):hb=run(c)
+   self.assertTrue(hb['ok'],hb['errors']);self.assertEqual(hb['damian']['fail_streak'],0)
+ def test_level3_switch_off(self):
+  with tempfile.TemporaryDirectory() as tmp,patch.object(control,'LEVEL3',False):
+   c=wctl(tmp,[wrow(owner='Damian')]);hb=run(c)
+   self.assertEqual(c.to_damian,[]);self.assertFalse(hb['damian']['enabled']);self.assertEqual(len(c.bus.alerts),1)
+ def test_a_failed_level3_send_is_red_retried_and_never_prints_the_url(self):
+  with tempfile.TemporaryDirectory() as tmp:
+   c=wctl(tmp,[wrow(owner='Damian')])
+   def broken(text):raise ValueError('unknown url type: https://api.telegram.org/botSECRET123/sendMessage')
+   c.telegram=broken;hb=run(c)
+   self.assertFalse(hb['ok']);self.assertIn('a level-3 alert could not reach Damian: ValueError',hb['errors'])
+   self.assertNotIn('SECRET123',(c.root/'latest-run.json').read_text());self.assertIsNone(c.db.execute('SELECT sent_at FROM damian_alerts').fetchone()[0])
+   c.telegram=c.to_damian.append
+   with later(15):run(c)
+   self.assertEqual(len(c.to_damian),1)
+ def test_dispatch_watch_is_read_the_way_the_collector_reads_supabase(self):
+  got={}
+  class R:
+   def __enter__(self):return self
+   def __exit__(self,*a):return False
+   def read(self,*a):return b'[]'
+  def urlopen(req,timeout=None):got['url']=req.full_url;got['headers']=dict(req.header_items());return R()
+  def keychain(args,**k):got['args']=args;return 'test-key\n'
+  with tempfile.TemporaryDirectory() as tmp,patch.object(control,'supabase_get',REAL_SUPABASE_GET),patch.object(control,'WATCH_EXPORT',None),patch.object(control.subprocess,'check_output',keychain),patch.object(control.urllib.request,'urlopen',urlopen):
+   c=control.Control(tmp,adapter=Fake(),bus=Bus());self.assertEqual(c.watch_read(),[])
+  self.assertEqual(got['url'],'https://hjycuzfhjokccpygvpvo.supabase.co/rest/v1/dispatch_watch?select=task_id,prefix,flags,flag_since,recovery_owner,recovery_action,checked_at')
+  self.assertIn('exec-dashboard-supabase-service',got['args']);self.assertEqual(got['headers'].get('Apikey'),'test-key')
+ def test_a_fresh_local_export_is_used_and_a_stale_one_is_not(self):
+  import os
+  with tempfile.TemporaryDirectory() as tmp:
+   f=__import__('pathlib').Path(tmp)/'dispatch_watch.json';f.write_text(json.dumps([wrow()]))
+   asked=[]
+   with patch.object(control,'WATCH_EXPORT',str(f)),patch.object(control,'supabase_get',lambda p:asked.append(p) or []):
+    c=control.Control(tmp,adapter=Fake(),bus=Bus());self.assertEqual(c.watch_read()[0]['prefix'],'SA5-T900');self.assertEqual(asked,[])
+    os.utime(f,(1,1));self.assertEqual(c.watch_read(),[]);self.assertEqual(len(asked),1)
+ def test_the_damian_route_is_the_watchdog_send(self):
+  self.assertTrue(str(control.DAMIAN_SENDER).endswith('.openclaw/bin/gateway-watchdog.py'))
+  with tempfile.TemporaryDirectory() as tmp:
+   import pathlib
+   out=pathlib.Path(tmp)/'sent.txt';w=pathlib.Path(tmp)/'gateway-watchdog.py'
+   w.write_text('def send(text):\n    open('+repr(str(out))+', "a").write(text)\nif __name__ == "__main__":\n    raise SystemExit("main must not run")\n')
+   with patch.object(control,'DAMIAN_SENDER',w):REAL_TELEGRAM('level 3 test')
+   self.assertEqual(out.read_text(),'level 3 test')
 if __name__=='__main__':unittest.main()
