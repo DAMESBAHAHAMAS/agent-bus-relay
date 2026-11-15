@@ -6,18 +6,27 @@ ALLOWED_READS={'project_task','project_task_comments','workdrive_text','workdriv
 def acceptance_hash(task):
  from control import requirements
  return hashlib.sha256(json.dumps(requirements(task),sort_keys=True).encode()).hexdigest()
+def norm(v):
+ """Compare names, not spellings: casefold, read '&' as 'and', drop everything but letters and digits, then one trailing 'agent'.
+ 'Biz-Operations', 'biz operations' and 'BizOps Agent' all become 'bizoperations' / 'bizops'."""
+ s=re.sub(r'[^a-z0-9]','',str(v or '').casefold().replace('&','and'))
+ return s[:-5] if s.endswith('agent') and len(s)>5 else s
 def who(v):
- """One spelling per identity: 'Biz Operations', 'Business Operations' and 'bizops' are the same; so are 'Claude Code' and 'claude-code'."""
+ """One spelling per identity: 'Biz Operations', 'Business Operations' and 'bizops' are the same; so are 'Claude Code' and 'claude-code'.
+ Aliases are looked up by their normalised form, so case, spaces, punctuation and a trailing 'agent' never make a new identity."""
  from control import ACTORS,FUNCTIONS
- s=str(v or '').strip()
- return re.sub(r'[^a-z0-9]','',(ACTORS.get(s) or FUNCTIONS.get(s) or s).casefold())
+ table={norm(k):c for k,c in list(ACTORS.items())+list(FUNCTIONS.items())}
+ table.update({norm(c):c for c in table.values()})
+ n=norm(v)
+ return table.get(n,n)
 def closer_check(plan,task,row):
  """SA5-T225 P-D: a task is closed only by someone who did not do it. The plan must name verified_by, and it must differ from the
  task's Execution Actor and from the dispatch executor. Refused before anything is read or written."""
  verifier=str(plan.get('verified_by') or '').strip()
- if not verifier:raise ValueError('Closure refused: the plan names no verified_by')
- doers={who(task.get('execution_actor')),who(row['executor'])}-{''}
- if who(verifier) in doers:raise ValueError('Closure refused: verified_by ('+verifier+') is the executor; a different agent or a person must verify')
+ if not norm(verifier):raise ValueError('Closure refused: the plan names no verified_by')
+ # Both the resolved identity and the bare normalised name count, so an unknown spelling of the executor is still the executor.
+ doers={f(x) for x in (task.get('execution_actor'),row['executor']) for f in (who,norm)}-{''}
+ if {who(verifier),norm(verifier)}&doers:raise ValueError('Closure refused: verified_by ('+verifier+') is the executor; a different agent or a person must verify')
  return verifier
 def verify(control,cid,plan_name,close=False):
  from control import closed
