@@ -126,6 +126,7 @@ function gitEnv(ctx, { transport: withTransport = false } = {}) {
   if (c.gitDir) e.GIT_DIR = c.gitDir;
   if (c.workTree) e.GIT_WORK_TREE = c.workTree;
   if (c.commonDir) e.GIT_COMMON_DIR = c.commonDir;
+  if (c.objectDir) e.GIT_OBJECT_DIRECTORY = c.objectDir;
   if (c.alternates) e.GIT_ALTERNATE_OBJECT_DIRECTORIES = c.alternates;
   // credential.helper= first clears any helper list; the owner's settings follow only for transport commands.
   const cfg = [["credential.helper", ""]].concat(withTransport ? transportConfig() : []);
@@ -143,8 +144,10 @@ function git(args, ctx, { raw = false, input = "" } = {}) {
   });
 }
 // The source repository (~/Developer/<repo>/.git, which the model cannot write) and the run's worktree, each pinned explicitly.
-const srcCtx = (repo, alternates) => ({ cwd: repo.src, gitDir: repo.commonDir, alternates: alternates ? repo.objects : undefined });
-const wtCtx = (repo) => ({ cwd: repo.cwd, gitDir: repo.gitDir, workTree: repo.cwd, commonDir: repo.commonDir, alternates: repo.objects });
+// With quarantine, the bridge also sees the run's new objects, but only as the hash-checked copies index-pack wrote into the
+// bridge's own quarantine folder, never the model's object folder (which a leftover process could still be changing).
+const srcCtx = (repo, quarantine) => ({ cwd: repo.src, gitDir: repo.commonDir, alternates: quarantine && repo.quarantine ? repo.quarantine : undefined });
+const wtCtx = (repo) => ({ cwd: repo.cwd, gitDir: repo.gitDir, workTree: repo.cwd, commonDir: repo.commonDir, alternates: repo.quarantine });
 
 // A commit the bridge will not push or vouch for: it adds or changes a gitlink (mode 160000, a nested repository), a
 // .gitmodules file, or any path with a .git component, including the variants git itself treats as .git or .gitmodules:
@@ -271,14 +274,14 @@ async function defaultBranch(ctx) {
   }
   return "";
 }
-async function prepareRepo(d, task, run) {
+async function prepareRepo(d, task, run, { beforeAdd = () => {} } = {}) {
   const src = path.join(DEV_ROOT, d.repo);
   let sl; try { sl = fs.lstatSync(path.join(src, ".git")); } catch (e) {}
   if (!sl) return { ok: false, reason: "repo " + d.repo + " is not a git repository under ~/Developer" };
   if (sl.isSymbolicLink() || !sl.isDirectory()) return { ok: false, reason: "repo " + d.repo + " is not a primary checkout (its .git must be a folder)" };
   if (!run || !run.dir) return { ok: false, reason: "no run folder" };
   const commonDir = fs.realpathSync(path.join(src, ".git"));
-  const repo = { src, commonDir, runDir: run.dir, runId: run.id, objects: path.join(run.dir, "objects") };
+  const repo = { src, commonDir, runDir: run.dir, runId: run.id, objects: path.join(run.dir, "objects"), quarantine: path.join(run.root || path.dirname(path.dirname(run.dir)), ".quarantine", run.id) };
   const sctx = srcCtx(repo);
   repo.url = (await git(["config", "--get", "remote.origin.url"], sctx)).out;   // from the source repository's own config
   let def = await defaultBranch(sctx);
@@ -303,6 +306,8 @@ async function prepareRepo(d, task, run) {
   await sweepStale(repo);
   repo.runRef = "chatgpt-run/" + d.task_id + "/" + run.id;
   repo.cwd = path.join(run.dir, d.repo + "-" + run.id);   // a unique name, so the worktree's git folder name is never reused
+  repo.gitDir = path.join(commonDir, "worktrees", path.basename(repo.cwd));   // expected; re-read and checked after the add
+  beforeAdd(repo);   // the marker names the run before anything is added to the repository
   const add = await git(["worktree", "add", "--quiet", "--no-track", "-b", repo.runRef, repo.cwd, repo.start], sctx);
   if (!add.ok) { await detachRun(repo); return { ok: false, reason: "could not create a worktree: " + add.err.slice(0, 160) }; }
   const fail = async (reason) => { await detachRun(repo); return { ok: false, reason }; };
@@ -323,17 +328,21 @@ async function prepareRepo(d, task, run) {
 // ~/.agent-bus/exec/.detached (the bridge's own folder; no run can write there).
 const RUN_NAME = /-\d{8}T\d{6}Z-[0-9a-f]{24}$/;
 async function sweepStale(repo) {
-  const refs = await git(["for-each-ref", "--format=%(refname)", "refs/heads/chatgpt-run/"], srcCtx(repo));
+  for (const base of [path.join(repo.commonDir, "refs", "heads", "chatgpt-run"), path.join(repo.commonDir, "logs", "refs", "heads", "chatgpt-run")]) {
+    try { if (fs.lstatSync(base).isDirectory()) fs.rmSync(base, { recursive: true, force: true }); } catch (e) {}   // loose refs, broken or not
+  }
+  const refs = await git(["for-each-ref", "--format=%(refname)", "refs/heads/chatgpt-run/"], srcCtx(repo));   // packed ones
   for (const ref of refs.ok && refs.out ? refs.out.split("\n") : []) {
-    if (/^refs\/heads\/chatgpt-run\/\d{6,25}\/\d{8}T\d{6}Z-[0-9a-f]{24}$/.test(ref)) await git(["update-ref", "--no-deref", "-d", ref], srcCtx(repo));
+    if (/^refs\/heads\/chatgpt-run\//.test(ref)) await git(["update-ref", "--no-deref", "-d", ref], srcCtx(repo));
   }
   const wts = path.join(repo.commonDir, "worktrees");
   let names = []; try { names = fs.readdirSync(wts); } catch (e) {}
   for (const n of names.filter((x) => RUN_NAME.test(x))) {
+    const dest = path.join(fs.realpathSync(WORK_ROOT), ".detached");
     try {
-      const dest = path.join(fs.realpathSync(WORK_ROOT), ".detached");
       fs.mkdirSync(dest, { recursive: true, mode: 0o700 });
-      fs.renameSync(path.join(wts, n), path.join(dest, n + "-" + Date.now()));
+      try { fs.renameSync(path.join(wts, n), path.join(dest, n + "-" + Date.now())); }
+      catch (e) { if (e.code !== "EXDEV") throw e; fs.cpSync(path.join(wts, n), path.join(dest, n + "-" + Date.now()), { recursive: true, verbatimSymlinks: true }); fs.rmSync(path.join(wts, n), { recursive: true, force: true }); }
     } catch (e) {}
   }
 }
@@ -343,9 +352,7 @@ const runRefFile = (repo) => path.join(repo.commonDir, "refs", "heads", ...repo.
 async function runSha(repo) {
   let sha = "";
   sha = (String(readPlain(runRefFile(repo), 64)).match(/^([0-9a-f]{40})\n?$/) || [])[1] || "";
-  if (!sha) return "";
-  const r = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", sha + "^{commit}"], srcCtx(repo, true));
-  return r.ok && r.out === sha ? sha : "";
+  return sha;
 }
 // The run's own object folder may hold loose objects only: no alternates, commit-graph, multi-pack-index or packs (which
 // the bridge's git would otherwise read), and no symlinks.
@@ -371,6 +378,16 @@ async function branchSafety(repo) {
   if (dirty) return no("comes from a run whose objects failed validation (" + dirty + ")");
   const sha = await runSha(repo);
   if (!sha) return no("does not resolve to a commit (the run branch must be a plain ref to a commit)");
+  // Copy the run's new objects once, through index-pack (which names every object by the hash of its content), into the
+  // bridge's own quarantine folder; everything below reads only those copies and the repository.
+  if (sha !== repo.base) {
+    fs.mkdirSync(path.join(repo.quarantine, "pack"), { recursive: true, mode: 0o700 });
+    const q = await packPipe(gitEnv({ cwd: repo.src, gitDir: repo.commonDir, alternates: repo.objects }),
+      gitEnv({ cwd: repo.src, gitDir: repo.commonDir, objectDir: repo.quarantine, alternates: path.join(repo.commonDir, "objects") }), sha + "\n^" + repo.base + "\n", false);
+    if (!q.ok) return no("has objects that could not be copied for checking (" + q.err.slice(0, 120) + ")", { sha });
+  }
+  const isCommit = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", sha + "^{commit}"], srcCtx(repo, true));
+  if (!isCommit.ok || isCommit.out !== sha) return no("does not resolve to a commit", { sha });
   const s = await commitsSafety(srcCtx(repo, true), repo.base, sha, repo.existing || undefined);
   if (!s.ok) return Object.assign(s, { sha });
   // The index too: the bridge's own git status reads it.
@@ -380,20 +397,21 @@ async function branchSafety(repo) {
   const bad = unsafe(recs);
   return bad.length ? no(BAD_REASON, { bad, sha }) : { ok: true, bad: [], sha, count: s.count };
 }
-// Copy the checked commits' objects from the run's object folder into the repository; index-pack --strict also fsck-checks them.
-function importObjects(repo, sha) {
+// pack-objects (reading with readEnv) piped into index-pack --stdin (writing with writeEnv). index-pack computes every
+// object's name from its content, so what it writes is exactly what the names say; --strict adds fsck checks and connectivity.
+function packPipe(readEnv, writeEnv, revs, strict) {
   return new Promise((resolve) => {
     let err = "", codes = {}, settled = false;
     const end = (ok) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ ok, err: err.trim().slice(0, 300) }); } };
-    const pack = spawn(GIT_BIN, GIT_HARDEN.concat(["pack-objects", "--revs", "--stdout", "--quiet"]), { cwd: repo.src, env: gitEnv(srcCtx(repo, true)) });
-    const idx = spawn(GIT_BIN, GIT_HARDEN.concat(["index-pack", "--stdin", "--strict"]), { cwd: repo.src, env: gitEnv(srcCtx(repo)) });
+    const pack = spawn(GIT_BIN, GIT_HARDEN.concat(["pack-objects", "--revs", "--stdout", "--quiet", "--no-reuse-delta", "--no-reuse-object"]), { cwd: readEnv.GIT_DIR, env: readEnv });
+    const idx = spawn(GIT_BIN, GIT_HARDEN.concat(["index-pack", "--stdin"].concat(strict ? ["--strict"] : [])), { cwd: writeEnv.GIT_DIR, env: writeEnv });
     const timer = setTimeout(() => { pack.kill(); idx.kill(); end(false); }, 120000);
     for (const c of [pack, idx]) { c.stderr.on("data", (b) => { err += b; }); c.on("error", () => end(false)); c.stdin.on("error", () => {}); }
     pack.stdout.pipe(idx.stdin);
     idx.stdout.resume();
     const close = (k) => (code) => { codes[k] = code; if ("pack" in codes && "idx" in codes) end(codes.pack === 0 && codes.idx === 0); };
     pack.on("close", close("pack")); idx.on("close", close("idx"));
-    pack.stdin.end(sha + "\n^" + repo.base + "\n");
+    pack.stdin.end(revs);
   });
 }
 
@@ -404,14 +422,17 @@ async function pushBranch(repo, safety) {
   const s = safety || await branchSafety(repo);
   if (!s.ok) return { ok: false, out: "", err: "refused: the branch " + s.reason + (s.bad.length ? ": " + s.bad.slice(0, 5).join(", ") : "") };
   if (s.sha === repo.base) return { ok: true, skipped: true, sha: s.sha };
-  if (s.sha !== repo.start) {
-    const imp = await importObjects(repo, s.sha);
+  if (s.sha !== repo.start) {   // the checked copies (quarantine) into the repository, with fsck checks
+    const imp = await packPipe(gitEnv(srcCtx(repo, true)), gitEnv(srcCtx(repo)), s.sha + "\n^" + repo.base + "\n", true);
     if (!imp.ok) return { ok: false, out: "", err: "refused: the commits' objects did not pass index-pack --strict: " + imp.err };
-    const up = await git(["update-ref", "--no-deref", "-m", "chatgpt run " + repo.runId, "refs/heads/" + repo.branch, s.sha, repo.existing || ZERO_OID], srcCtx(repo));
-    if (!up.ok) return { ok: false, out: "", err: "could not move " + repo.branch + ": " + up.err.slice(0, 160) };
   }
   if (!repo.url) return { ok: false, out: "", err: "no remote.origin.url in ~/Developer's copy of the repository" };
   const p = await git(["push", "--quiet", "--no-verify", "--no-recurse-submodules", repo.url, s.sha + ":refs/heads/" + repo.branch], srcCtx(repo));
+  // The local task branch follows the remote: it moves only after a successful push (never followed as a symbolic ref).
+  if (p.ok && s.sha !== repo.existing) {
+    const up = await git(["update-ref", "--no-deref", "-m", "chatgpt run " + repo.runId, "refs/heads/" + repo.branch, s.sha, repo.existing || ZERO_OID], srcCtx(repo));
+    if (!up.ok) return { ok: false, out: p.out, err: "pushed, but could not move the local " + repo.branch + ": " + up.err.slice(0, 160), sha: s.sha };
+  }
   return Object.assign(p, { sha: s.sha });
 }
 
@@ -426,10 +447,13 @@ async function detachRun(repo) {
   const tip = (String(readPlain(refFile, 64)).match(/^([0-9a-f]{40})\n?$/) || [])[1] || "";   // only a plain sha is recorded
   try { fs.writeFileSync(path.join(repo.runDir, "run-branch.txt"), repo.runRef + " " + (tip || "(none)") + "\n"); } catch (e) {}
   const del = await git(["update-ref", "--no-deref", "-d", "refs/heads/" + repo.runRef], srcCtx(repo));
-  for (const f of [refFile, refFile + ".lock", reflog]) {   // a ref the model broke: remove the file itself (unlink never follows a symlink)
-    try { fs.unlinkSync(f); } catch (e) { if (e.code !== "ENOENT") ok = false; }
+  for (const f of [refFile, refFile + ".lock", reflog]) {   // whatever the model left at these paths, file or folder (never followed)
+    try { fs.rmSync(f, { recursive: true, force: true }); } catch (e) { ok = false; }
   }
   if (!del.ok && fs.existsSync(refFile)) ok = false;
+  if (repo.quarantine && path.basename(path.dirname(repo.quarantine)) === ".quarantine") {   // the bridge's checked copies, kept as evidence
+    try { fs.renameSync(repo.quarantine, path.join(repo.runDir, "quarantine")); } catch (e) {}
+  }
   if (repo.gitDir && path.dirname(repo.gitDir) === path.join(repo.commonDir, "worktrees")) {
     const dest = path.join(repo.runDir, "worktree-git");
     try { fs.renameSync(repo.gitDir, dest); } catch (e) {
@@ -548,22 +572,60 @@ function execArgs(text, { model, cwd, repo }) {
     "--permission-mode", "dontAsk", "--strict-mcp-config", "--no-session-persistence"];
 }
 
-// The CLI runs in a process group of its own; when it exits (or times out) the whole group is killed, so a process a run
-// started in the background does not keep writing while the bridge checks the result.
-function runClaude(claudeBin, text, cwd, env, repo, { timeoutMs = EXEC_TIMEOUT_S * 1000 } = {}) {
+// Processes a run starts can outlive the CLI (the Bash tool gives each command its own process group). While the CLI runs,
+// the bridge records its descendants every second (pid, process group and start time, from ps); when the CLI exits or times
+// out, every recorded process that is still the same process is killed, with its whole process group when it leads one.
+// The bridge's own process group is never signalled. A process that leaves the tree within one sampling interval can still
+// escape; its writes stay inside that run's own sandboxed paths, the checks read only hash-checked copies (quarantine), and
+// the next repository run sweeps any run ref it recreates.
+function psTable() {
+  return new Promise((resolve) => execFile("/bin/ps", ["-A", "-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "lstart="], { timeout: 5000, maxBuffer: 4 * 1024 * 1024 },
+    (err, out) => resolve(String(out || "").split("\n").map((l) => l.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)).filter(Boolean)
+      .map((m) => ({ pid: +m[1], ppid: +m[2], pgid: +m[3], start: m[4] })))));
+}
+function treeWatcher(rootPid, everyMs = 1000) {
+  const seen = new Map();   // pid -> { start, pgid }
+  let stopped = false;
+  const sample = async () => {
+    const t = await psTable(), kids = new Map();
+    for (const p of t) { if (!kids.has(p.ppid)) kids.set(p.ppid, []); kids.get(p.ppid).push(p); }
+    const queue = [rootPid];
+    while (queue.length) for (const c of kids.get(queue.shift()) || []) { if (!seen.has(c.pid)) seen.set(c.pid, { start: c.start, pgid: c.pgid }); queue.push(c.pid); }
+  };
+  const loop = async () => { while (!stopped) { await sample(); await new Promise((r) => setTimeout(r, everyMs).unref()); } };
+  loop();
+  return {
+    sample,
+    async killAll() {
+      stopped = true;
+      const own = (await psTable()).find((p) => p.pid === process.pid);
+      const ownGroup = own ? own.pgid : -1;
+      const now = new Map((await psTable()).map((p) => [p.pid, p]));
+      for (const [pid, r] of seen) {
+        const cur = now.get(pid);
+        if (!cur || cur.start !== r.start) continue;   // gone, or the pid now names another process
+        if (cur.pgid === pid && pid !== ownGroup) try { process.kill(-pid, "SIGKILL"); } catch (e) {}
+        try { process.kill(pid, "SIGKILL"); } catch (e) {}
+      }
+      return seen.size;
+    },
+  };
+}
+function runClaude(claudeBin, text, cwd, env, repo, { timeoutMs = EXEC_TIMEOUT_S * 1000, sampleMs = 1000 } = {}) {
   return new Promise((resolve) => {
     let out = "", size = 0, timedOut = false, done = false;
-    const child = spawn(claudeBin, execArgs(text, { cwd, repo }), { cwd, env, detached: true, stdio: ["ignore", "pipe", "ignore"] });
-    const killGroup = () => { try { process.kill(-child.pid, "SIGKILL"); } catch (e) {} };
-    const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
-    child.stdout.on("data", (b) => { size += b.length; if (size <= 32 * 1024 * 1024) out += b; else killGroup(); });
-    const finish = () => {
-      if (done) return; done = true; clearTimeout(timer); killGroup();
+    const child = spawn(claudeBin, execArgs(text, { cwd, repo }), { cwd, env, stdio: ["ignore", "pipe", "ignore"] });
+    const watch = child.pid ? treeWatcher(child.pid, sampleMs) : null;
+    const timer = setTimeout(() => { timedOut = true; try { child.kill("SIGKILL"); } catch (e) {} }, timeoutMs);
+    child.stdout.on("data", (b) => { size += b.length; if (size <= 32 * 1024 * 1024) out += b; else try { child.kill("SIGKILL"); } catch (e) {} });
+    const finish = async () => {
+      if (done) return; done = true; clearTimeout(timer);
+      if (watch) await watch.killAll();
       try { const j = JSON.parse(out.slice(out.indexOf("{"))); resolve({ ok: !j.is_error && typeof j.result === "string", text: j.result || "", status: j.subtype || "ok" }); }
       catch (e) { resolve({ ok: false, text: "", status: timedOut ? "timed_out" : "run_failed" }); }
     };
     child.on("error", finish);
-    child.on("exit", () => { killGroup(); setTimeout(() => { child.stdout.destroy(); finish(); }, 5000).unref(); });   // a pipe held open by an escaped process does not stall the bridge
+    child.on("exit", () => { setTimeout(() => { child.stdout.destroy(); finish(); }, 5000).unref(); });   // a pipe held open by an escaped process does not stall the bridge
     child.on("close", finish);
   });
 }
@@ -641,18 +703,20 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
     if (!task.open) return post("result", "STATUS: BLOCKED: task " + d.task_id + " (" + task.name + ") is closed.");
     let runDir;
     try { runDir = newRun(d.task_id); } catch (e) { return post("result", "STATUS: BLOCKED: could not make a new run folder (" + String(e.code || e.message).slice(0, 80) + ")."); }
-    const markRun = () => fs.writeFileSync(MARKER, JSON.stringify({ cid, task_id: d.task_id, at: new Date().toISOString(),
-      repo: repo && repo.ok ? { src: repo.src, commonDir: repo.commonDir, gitDir: repo.gitDir, runRef: repo.runRef, runDir: repo.runDir } : undefined }));
+    const markRun = (r) => fs.writeFileSync(MARKER, JSON.stringify({ cid, task_id: d.task_id, at: new Date().toISOString(),
+      repo: r ? { src: r.src, commonDir: r.commonDir, gitDir: r.gitDir, runRef: r.runRef, runDir: r.runDir, quarantine: r.quarantine } : undefined }));
     markRun();   // before anything is added to a repository, so a restart at any point is reported (and swept by the next run)
     let cwd = runDir.dir, runEnv = childEnv;
     if (d.repo) {
-      repo = await prepareRepo(d, task, runDir);
+      repo = await prepareRepo(d, task, runDir, { beforeAdd: (r) => markRun(r) });
       if (!repo.ok) { const why = repo.reason; repo = null; return post("result", "STATUS: BLOCKED: " + why + "."); }
       cwd = repo.cwd;
-      markRun();   // now with what recoverInterrupted needs to take the run back out of the repository
       // The model's git writes new objects to the run's own object folder; the repository's objects are read through an alternate.
-      runEnv = Object.assign({}, childEnv, { GIT_OBJECT_DIRECTORY: repo.objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(repo.commonDir, "objects"),
-        GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "gc.auto", GIT_CONFIG_VALUE_0: "0", GIT_CONFIG_KEY_1: "maintenance.auto", GIT_CONFIG_VALUE_1: "false" });   // no background gc that writes packs
+      runEnv = Object.assign({}, childEnv, { GIT_OBJECT_DIRECTORY: repo.objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(repo.commonDir, "objects") });
+      // no background gc or fsmonitor daemon from the model's git (appended to any GIT_CONFIG_* entries already present)
+      let n = Number(runEnv.GIT_CONFIG_COUNT) || 0;
+      for (const [k, v] of [["gc.auto", "0"], ["maintenance.auto", "false"], ["core.fsmonitor", "false"]]) { runEnv["GIT_CONFIG_KEY_" + n] = k; runEnv["GIT_CONFIG_VALUE_" + n] = v; n++; }
+      runEnv.GIT_CONFIG_COUNT = String(n);
     }
     await post("ack", "STATUS: STARTED " + cid + " on task " + d.task_id + " (" + task.name + ")" + (repo ? " in " + d.repo + " on branch " + repo.branch : "") + ". The result will follow on this correlation id.");
     log("delegated task", d.task_id, "started for", cid, "in", cwd);

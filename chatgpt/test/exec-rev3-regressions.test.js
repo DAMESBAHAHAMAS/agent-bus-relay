@@ -329,14 +329,16 @@ test("R3-review: a run ref or listed file swapped for a symlink or FIFO is never
   assert.match(np.last, /real\.txt \(2 bytes/);
 });
 
-test("R3-review: runClaude kills the run's whole process group when the CLI exits, so a background process stops writing", async () => {
-  const fake = path.join(BIN, "fake-claude.sh"), late = path.join(TMP, "late-write.txt");
-  fs.writeFileSync(fake, "#!/bin/sh\n( sleep 2; echo late > '" + late + "' ) &\nprintf '%s\\n' '{\"result\": \"ok STATUS: COMPLETE\", \"subtype\": \"success\"}'\n", { mode: 0o755 });
+test("R3-review: runClaude kills processes a run left behind, even in their own process group, so they stop writing", async () => {
+  const fake = path.join(BIN, "fake-claude.js"), late = path.join(TMP, "late-write.txt");
+  fs.writeFileSync(fake, "#!" + process.execPath + "\nconst { spawn } = require('child_process');\n" +
+    "spawn(process.execPath, ['-e', \"setTimeout(() => require('fs').writeFileSync(" + JSON.stringify(late).replace(/"/g, "'") + ", 'late'), 2500)\"], { detached: true, stdio: 'ignore' }).unref();\n" +
+    "setTimeout(() => console.log(JSON.stringify({ result: 'ok\\nSTATUS: COMPLETE', subtype: 'success' })), 1000);\n", { mode: 0o755 });
   const run = executor.newRun("7500007");
-  const r = await executor.runClaude(fake, "P", run.dir, process.env, null);
+  const r = await executor.runClaude(fake, "P", run.dir, process.env, null, { sampleMs: 200 });
   assert.equal(r.ok, true, JSON.stringify(r));
-  await new Promise((res) => setTimeout(res, 3000));
-  assert.ok(!fs.existsSync(late), "the background process outlived the run and wrote after it");
+  await new Promise((res) => setTimeout(res, 3500));
+  assert.ok(!fs.existsSync(late), "a detached background process outlived the run and wrote after it");
 });
 
 test("R3-review: a symbolic task branch is refused and never followed (the live main does not move)", async () => {
@@ -380,6 +382,24 @@ test("R3-review: the HFS-ignorable character class is written as escapes, not in
   assert.ok(src.includes("const IGNORABLE = /[\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u206f\\ufeff]/g;"));
   assert.ok(!/[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/.test(src), "no invisible characters in executor.js");
   assert.ok(executor.isGitPath(".g\u200cit/x") && executor.isGitPath(".gitmodules\ufeff"));
+});
+
+test("R3-review: a run whose loose object content does not match its name is refused (outcome test; git's own hash check and the quarantine both stop it)", async () => {
+  const { origin } = source("q6");
+  const { last } = await exec("7500008", "q6", async (bin, text, cwd, runEnv) => {
+    const mg = (...a) => execFileSync(REAL_GIT, a, { cwd, encoding: "utf8", env: Object.assign({}, runEnv, ID_ENV) }).trim();
+    mg("update-index", "--add", "--cacheinfo", "160000," + mg("rev-parse", "HEAD") + ",sub");
+    const bad = mg("write-tree"), clean = mg("rev-parse", "HEAD^{tree}");
+    mg("update-ref", "HEAD", mg("commit-tree", bad, "-p", "HEAD", "-m", "gitlink behind a forged tree object"));
+    mg("read-tree", clean);   // the index shows nothing either
+    // the gitlink tree's loose file now holds the clean tree's bytes: a reader that trusts names would see no gitlink
+    const body = execFileSync(REAL_GIT, ["cat-file", "tree", clean], { cwd, env: Object.assign({}, runEnv) });
+    const file = path.join(runEnv.GIT_OBJECT_DIRECTORY, bad.slice(0, 2), bad.slice(2));
+    fs.chmodSync(file, 0o644); fs.writeFileSync(file, require("node:zlib").deflateSync(Buffer.concat([Buffer.from("tree " + body.length + "\0"), body])));
+    return { ok: true, text: "done\nSTATUS: COMPLETE" };
+  });
+  assert.match(last, /STATUS: BLOCKED/);
+  assert.equal(remoteBranches(origin), "");
 });
 
 // ---------- F2/F5 and R6: every bridge git call, as the logging wrapper saw it (runs last: it reads the whole log) ----------
