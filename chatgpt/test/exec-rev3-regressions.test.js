@@ -451,6 +451,26 @@ test("R3-review: processes a run left are killed even when started by a process 
   assert.ok(!fs.existsSync(executor.PIDS));
 });
 
+test("R3-review: a repository with no remote.origin.url is refused before the run; killRecorded never signals the bridge's own process group", async () => {
+  const { live } = source("q9");
+  g(live, "remote", "remove", "origin");
+  let ran9 = false;
+  const { last } = await exec("7500012", "q9", async () => { ran9 = true; return { ok: true, text: "x\nSTATUS: COMPLETE" }; });
+  assert.equal(ran9, false);
+  assert.match(last, /STATUS: BLOCKED: repo q9 has no remote.origin.url/);
+  const { spawn } = require("node:child_process");
+  const same = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { stdio: "ignore" });   // in this (the "bridge's") process group
+  await new Promise((res) => setTimeout(res, 300));
+  const row = execFileSync("/bin/ps", ["-o", "pgid=", "-o", "lstart=", "-p", String(same.pid)], { encoding: "utf8" }).trim().match(/^(\d+)\s+(.+)$/);
+  const ownGroup = Number(execFileSync("/bin/ps", ["-o", "pgid=", "-p", String(process.pid)], { encoding: "utf8" }).trim());
+  assert.equal(Number(row[1]), ownGroup);
+  const seen = new Map([[same.pid, { start: row[2], pgid: ownGroup }], [ownGroup, { start: "not this process", pgid: ownGroup }]]);
+  assert.equal(await executor.killRecorded(seen), true);
+  await new Promise((res) => setTimeout(res, 300));
+  let alive = true; try { process.kill(same.pid, 0); } catch (e) { alive = false; }
+  assert.equal(alive, false, "the recorded process itself is killed");   // and this test process is still running
+});
+
 // ---------- F2/F5 and R6: every bridge git call, as the logging wrapper saw it (runs last: it reads the whole log) ----------
 const REQUIRED = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "core.sshCommand=ssh", "core.askPass=", "core.pager=cat", "diff.external=",
   "filter.lfs.process=", "protocol.allow=never", "protocol.ext.allow=never", "submodule.recurse=false", "core.attributesFile=/dev/null",

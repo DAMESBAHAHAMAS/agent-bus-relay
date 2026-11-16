@@ -286,6 +286,7 @@ async function prepareRepo(d, task, run, { beforeAdd = () => {} } = {}) {
   const repo = { src, commonDir, runDir: run.dir, runId: run.id, objects: path.join(run.dir, "objects"), quarantine: path.join(run.root || path.dirname(path.dirname(run.dir)), ".quarantine", run.id, "objects") };
   const sctx = srcCtx(repo);
   repo.url = (await git(["config", "--get", "remote.origin.url"], sctx)).out;   // from the source repository's own config
+  if (!repo.url) return { ok: false, reason: "repo " + d.repo + " has no remote.origin.url, so the bridge could not push the task branch" };
   let def = await defaultBranch(sctx);
   const m = /^refs\/remotes\/origin\/(.+)$/.exec(def);
   if (repo.url && m) {   // best effort; offline falls back to the last fetched state
@@ -368,7 +369,7 @@ function snapshotLoose(from, to) {
         const body = readPlain(path.join(from, d.name, f.name), 256 * 1024 * 1024, true);
         if (body === null) continue;
         fs.mkdirSync(path.join(to, d.name), { recursive: true, mode: 0o700 });
-        fs.writeFileSync(path.join(to, d.name, f.name), body, { mode: 0o400, flag: "wx" });
+        try { fs.writeFileSync(path.join(to, d.name, f.name), body, { mode: 0o400, flag: "wx" }); } catch (e) { if (e.code !== "EEXIST") throw e; }   // a second check reuses the first copy
         if (++n > 200000) return null;
       }
     }
@@ -457,7 +458,7 @@ async function pushBranch(repo, safety) {
   // The local task branch follows the remote: it moves only after a successful push (never followed as a symbolic ref).
   if (p.ok && s.sha !== repo.existing) {
     const up = await git(["update-ref", "--no-deref", "-m", "chatgpt run " + repo.runId, "refs/heads/" + repo.branch, s.sha, repo.existing || ZERO_OID], srcCtx(repo));
-    if (!up.ok) return { ok: false, out: p.out, err: "pushed, but could not move the local " + repo.branch + ": " + up.err.slice(0, 160), sha: s.sha };
+    if (!up.ok) return { ok: true, out: p.out, err: "", warn: "pushed, but could not move the local " + repo.branch + ": " + up.err.slice(0, 160), sha: s.sha };
   }
   return Object.assign(p, { sha: s.sha });
 }
@@ -617,18 +618,20 @@ async function psTableRetry() {
   for (let i = 0; i < 3; i++) { const t = await psTable(); if (t.length) return t; await new Promise((r) => setTimeout(r, 300)); }
   return [];
 }
-// Kill every recorded process that is still the same process (pid and start time), and every recorded process group
-// (other than the bridge's own) that still has a recorded member alive. Returns false if ps could not be read.
+// Kill every recorded process that is still the same process (pid and start time), and every process group that a recorded
+// process created (its leader was recorded) and that still has a recorded member alive. Never the bridge's own group, and no
+// group at all if ps does not show the bridge itself. Returns false if ps could not be read.
 async function killRecorded(seen) {
   const t = await psTableRetry();
   if (!t.length) return false;
   const now = new Map(t.map((p) => [p.pid, p]));
-  const own = now.get(process.pid), ownGroup = own ? own.pgid : -1;
+  const own = now.get(process.pid);
   const groups = new Set();
   for (const [pid, r] of seen) {
     const cur = now.get(pid);
     if (!cur || cur.start !== r.start) continue;   // gone, or the pid now names another process
-    if (cur.pgid !== ownGroup && cur.pgid > 1) groups.add(cur.pgid);
+    const g = cur.pgid, leader = seen.get(g), liveLeader = now.get(g);
+    if (own && g !== own.pgid && g > 1 && leader && (!liveLeader || liveLeader.start === leader.start)) groups.add(g);
     try { process.kill(pid, "SIGKILL"); } catch (e) {}
   }
   for (const g of groups) try { process.kill(-g, "SIGKILL"); } catch (e) {}
@@ -636,22 +639,34 @@ async function killRecorded(seen) {
 }
 function treeWatcher(rootPid, everyMs = 1000, onNew = () => {}) {
   const seen = new Map();   // pid -> { start, pgid }
-  let stopped = false;
+  let stopped = false, rootGone = false;
   const sample = async () => {
     const t = await psTable(), kids = new Map(), byPid = new Map(t.map((p) => [p.pid, p]));
     for (const p of t) { if (!kids.has(p.ppid)) kids.set(p.ppid, []); kids.get(p.ppid).push(p); }
     if (stopped) return;
     // from the CLI, and from every recorded process still alive (one reparented to launchd keeps its children recorded)
-    const queue = [rootPid, ...[...seen].filter(([pid, r]) => byPid.has(pid) && byPid.get(pid).start === r.start).map(([pid]) => pid)];
+    const queue = (rootGone ? [] : [rootPid]).concat([...seen].filter(([pid, r]) => byPid.has(pid) && byPid.get(pid).start === r.start).map(([pid]) => pid));
     let grew = false;
     while (queue.length) for (const c of kids.get(queue.shift()) || []) { if (!seen.has(c.pid)) { seen.set(c.pid, { start: c.start, pgid: c.pgid }); grew = true; queue.push(c.pid); } }
     if (grew) onNew(seen);
   };
   const loop = async () => { while (!stopped) { await sample(); await new Promise((r) => setTimeout(r, everyMs).unref()); } };
   loop();
-  return { seen, stop() { stopped = true; }, async killAll() { stopped = true; return killRecorded(seen); } };
+  return { seen, rootExited() { rootGone = true; }, async killAll() { stopped = true; return killRecorded(seen); } };
 }
-const savePids = (seen) => { try { fs.writeFileSync(PIDS, JSON.stringify([...seen].map(([pid, r]) => ({ pid, start: r.start, pgid: r.pgid })))); } catch (e) {} };
+const savePids = (seen) => {
+  try { const tmp = PIDS + ".tmp"; fs.writeFileSync(tmp, JSON.stringify([...seen].map(([pid, r]) => ({ pid, start: r.start, pgid: r.pgid })))); fs.renameSync(tmp, PIDS); } catch (e) {}
+};
+// Processes recorded by an earlier run that were not confirmed stopped (a restart, or ps unavailable): stop them now.
+// Returns false if they could not be confirmed stopped; the file is removed only if it is still the one that was read.
+async function reapLeftovers() {
+  let raw; try { raw = fs.readFileSync(PIDS, "utf8"); } catch (e) { return true; }
+  let list = []; try { list = JSON.parse(raw); } catch (e) { list = []; }
+  const seen = new Map((Array.isArray(list) ? list : []).filter((x) => x && Number.isInteger(x.pid) && x.pid > 1 && typeof x.start === "string").map((x) => [x.pid, { start: x.start, pgid: x.pgid }]));
+  if (seen.size && !(await killRecorded(seen))) return false;
+  try { if (fs.readFileSync(PIDS, "utf8") === raw) fs.unlinkSync(PIDS); } catch (e) {}
+  return true;
+}
 function runClaude(claudeBin, text, cwd, env, repo, { timeoutMs = EXEC_TIMEOUT_S * 1000, sampleMs = 1000 } = {}) {
   return new Promise((resolve) => {
     let out = "", size = 0, timedOut = false, done = false;
@@ -667,7 +682,7 @@ function runClaude(claudeBin, text, cwd, env, repo, { timeoutMs = EXEC_TIMEOUT_S
       catch (e) { resolve({ ok: false, text: "", status: timedOut ? "timed_out" : "run_failed", reaped }); }
     };
     child.on("error", finish);
-    child.on("exit", () => { if (watch) watch.stop(); setTimeout(() => { child.stdout.destroy(); finish(); }, 5000).unref(); });   // no sampling once the CLI pid can be reused; a pipe held open by an escaped process does not stall the bridge
+    child.on("exit", () => { if (watch) watch.rootExited(); setTimeout(() => { child.stdout.destroy(); finish(); }, 5000).unref(); });   // the CLI pid may be reused: walk only from recorded processes; a pipe held open by an escaped process does not stall the bridge
     child.on("close", finish);
   });
 }
@@ -703,6 +718,7 @@ function summarize(u) {
 }
 
 async function recoverInterrupted(postFor) {
+  await reapLeftovers().catch(() => {});   // processes the interrupted run left behind, with or without a marker
   let m; try { m = JSON.parse(fs.readFileSync(MARKER, "utf8")); } catch (e) { return null; }
   // A repository run cut short is taken back out of the repository too. The marker is the bridge's own file (no run can write it).
   const r = m && m.repo;
@@ -711,11 +727,6 @@ async function recoverInterrupted(postFor) {
     known = !!r && typeof r === "object" && typeof r.src === "string" && typeof r.commonDir === "string" && typeof r.runDir === "string" &&
       fs.realpathSync(path.join(r.src, ".git")) === r.commonDir && r.commonDir.startsWith(fs.realpathSync(DEV_ROOT) + path.sep) &&
       r.runDir.startsWith(fs.realpathSync(WORK_ROOT) + path.sep) && (!r.gitDir || path.dirname(r.gitDir) === path.join(r.commonDir, "worktrees"));
-  } catch (e) {}
-  try {   // processes the interrupted run left behind
-    const list = JSON.parse(fs.readFileSync(PIDS, "utf8"));
-    if (Array.isArray(list)) await killRecorded(new Map(list.filter((x) => x && Number.isInteger(x.pid) && x.pid > 1 && typeof x.start === "string").map((x) => [x.pid, { start: x.start, pgid: x.pgid }])));
-    fs.unlinkSync(PIDS);
   } catch (e) {}
   if (known) await detachRun(r).catch(() => {});
   await postFor(m.cid, "result", maskIds("This notice is from the Mac bridge, not from Claude Code. The run for task " + m.task_id + " (started " + m.at +
@@ -748,6 +759,7 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
     const task = await check(d.project_id, d.task_id);
     if (!task || !task.ok) return post("result", "STATUS: BLOCKED: task " + d.task_id + " is not usable: " + ((task && task.reason) || "lookup failed") + ". Only open tasks in Damian's system of record can be delegated.");
     if (!task.open) return post("result", "STATUS: BLOCKED: task " + d.task_id + " (" + task.name + ") is closed.");
+    if (!(await reapLeftovers())) return post("result", "STATUS: BLOCKED: processes left by an earlier delegated run could not be confirmed stopped (ps unavailable). Retry later with a new idempotency_key.");
     let runDir;
     try { runDir = newRun(d.task_id); } catch (e) { return post("result", "STATUS: BLOCKED: could not make a new run folder (" + String(e.code || e.message).slice(0, 80) + ")."); }
     const markRun = (r) => fs.writeFileSync(MARKER, JSON.stringify({ cid, task_id: d.task_id, at: new Date().toISOString(),
@@ -772,7 +784,11 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
     if (r.reaped === false) return post("result", "STATUS: BLOCKED: the bridge could not confirm that the run's processes had stopped (ps unavailable), so it did not check, push or list the run's work. Nothing was written to Zoho.");
     const safety = repo ? await branchSafety(repo) : null;
     let pushFail = null;
-    if (repo && safety.ok) { const p = await pushBranch(repo, safety); if (!p.ok) { pushFail = p.err; log("delegated task", d.task_id, "push failed:", p.err.slice(0, 200)); } }
+    if (repo && safety.ok) {
+      const p = await pushBranch(repo, safety);
+      if (!p.ok) { pushFail = p.err; log("delegated task", d.task_id, "push failed:", p.err.slice(0, 200)); }
+      else if (p.warn) log("delegated task", d.task_id, p.warn);
+    }
     const evidence = await verify(cwd, repo, safety).catch((e) => "BRIDGE-VERIFIED EVIDENCE: the check failed (" + String(e.message || e).slice(0, 80) + ").");
     log("delegated task", d.task_id, "evidence:", evidence.replace(/\n/g, " | ").slice(0, 300));
     // A refused branch ends the run here: not pushed, nothing written to Zoho, and BLOCKED whatever the model reported.
@@ -799,4 +815,4 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
 }
 
 module.exports = { delegation, execute, recoverInterrupted, maskIds, prompt, checkTask, runClaude, updateTask, splitReport, summarize, prepareRepo, verify, execArgs, execSettings, EXEC_TOOLS, SETTINGS,
-  git, gitEnv, GIT_HARDEN, branchSafety, commitsSafety, validateWorktree, detachRun, readPlain, isGitPath, pushBranch, newRun, transportConfig, GIT_BIN, MARKER, PIDS };
+  git, gitEnv, GIT_HARDEN, branchSafety, commitsSafety, validateWorktree, detachRun, readPlain, isGitPath, pushBranch, newRun, transportConfig, killRecorded, GIT_BIN, MARKER, PIDS };
