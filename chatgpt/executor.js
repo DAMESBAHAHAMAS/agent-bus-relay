@@ -12,7 +12,8 @@
 //    loaded), so every tool not on its allowlist is denied: no delete, no credential files, no Keychain, no shell beyond named git and
 //    test commands, pushes only to chatgpt/* branches, no edits to the relay, its own instructions, CI or deploy files, no MCP tools.
 //  - One delegated run at a time, 30-minute limit. "Started" is posted at once; the result follows on the same correlation id.
-const { execFile, execFileSync } = require("child_process");
+const { execFile, execFileSync, spawn } = require("child_process");
+const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -44,68 +45,113 @@ function delegation(env) {
   return d;
 }
 
-// ---------- repository work: the bridge (not the model) makes a worktree on the task's own branch ----------
+// ---------- repository work: the bridge (not the model) makes a fresh worktree for every run ----------
 // The model's Bash allowlist matches command prefixes, so `git -C <repo>` and `cd <repo> && git` are denied. Running the model
-// inside a worktree lets the existing narrow rules (git status/add/commit, git push -u origin chatgpt/...) work unchanged, and
-// keeps it off Damian's live checkouts.
+// inside a worktree lets the narrow rules (git status/add/commit) work unchanged, and keeps it off Damian's live checkouts.
 //
-// Every git command the bridge runs is unsandboxed, and runs in a folder the model has written to. So none of them may read
-// configuration or run code that the model could have placed there: a nested repository (a gitlink) with core.fsmonitor set
-// in its own config would otherwise run its command when `git status` recurses into it. Each call therefore gets:
-//  - GIT_HARDEN: no fsmonitor, no hooks, no file:// transport, no submodule recursion (passed to sub-gits too, through
-//    GIT_CONFIG_PARAMETERS, and taking precedence over any repository's own config);
-//  - gitEnv(): a minimal environment with no system or global config, no prompts, no optional index writes, and
-//    discovery that stops at the folder itself;
-//  - --ignore-submodules=all on status (and log), so git does not enter a nested repository at all.
-// BUS_GIT_FILE_PROTOCOL=always is for the offline tests and local-path origins only; it is read from the bridge's own
-// environment, which the model cannot reach.
-const GIT_BIN = process.env.BUS_GIT_BIN || (fs.existsSync("/usr/bin/git") ? "/usr/bin/git" : "git");
-const FILE_PROTOCOL = process.env.BUS_GIT_FILE_PROTOCOL === "always" ? "always" : "never";
-const GIT_HARDEN = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "protocol.file.allow=" + FILE_PROTOCOL,
-  "-c", "submodule.recurse=false", "-c", "fetch.recurseSubmodules=false", "-c", "push.recurseSubmodules=no", "-c", "status.submoduleSummary=false"];
-function gitEnv(cwd) {
-  const e = { PATH: process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin", HOME: os.homedir(), LANG: "C", LC_ALL: "C",
-    GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0",
-    GIT_CEILING_DIRECTORIES: path.dirname(path.resolve(cwd)) };
-  for (const k of ["TMPDIR", "USER", "LOGNAME", "SSH_AUTH_SOCK"]) if (process.env[k]) e[k] = process.env[k];
-  return e;
+// Revision 3 (SA5-T225). Every run gets its own folder, ~/.agent-bus/exec/<task id>/<run id>, with a run id the bridge draws
+// at random; nothing from an earlier run is ever reused. A repository run gets a NEW worktree there, on a branch of its own
+// (chatgpt-run/<task id>/<run id>), started from the task branch chatgpt/<task id>-<slug> that the BRIDGE keeps. The model can
+// write only that work tree, the worktree's git folder minus HEAD, refs, config and the pointer files, a per-run object folder
+// (the shared objects are read-only for it) and its own run branch ref. After the run the bridge:
+//  - re-validates the worktree against what it recorded when it made it (validateWorktree);
+//  - reads the run branch once, to one sha, and checks EVERY commit from the trusted fork point to that sha (commitsSafety);
+//  - copies the checked objects into the repository (index-pack --strict), moves the task branch itself, and pushes exactly
+//    <sha>:refs/heads/<task branch> to the URL in ~/Developer/<repo>'s own config, from the source repository, never from
+//    the worktree and never by the remote name "origin".
+// Every git command the bridge runs is unsandboxed, so each one gets:
+//  - GIT_HARDEN: no fsmonitor, hooks, pager, external diff, ssh/askpass programs from config, LFS filters, submodule
+//    recursion, auto-gc, or transports other than https and ssh (file only with BUS_GIT_FILE_PROTOCOL=always), and no
+//    attributes at all (--attr-source=<empty tree>), so no filter or diff driver can be selected by a model-written
+//    .gitattributes;
+//  - gitEnv(): a minimal environment with no system or global config, no prompts, no optional index writes, no replace
+//    objects, and an explicit GIT_DIR (plus GIT_WORK_TREE and GIT_COMMON_DIR in the worktree), so git never discovers a
+//    repository from a .git file the model could have changed. Configuration is read only from ~/Developer/<repo>/.git/config,
+//    which the model cannot write;
+//  - the owner's credential.* settings only for push, ls-remote and fetch, passed in the environment (GIT_CONFIG_COUNT), not argv.
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const ZERO_OID = "0".repeat(40);
+const OID = /^[0-9a-f]{40}$/;
+const MAX_COMMITS = 200;
+// /usr/bin/git on macOS is an xcrun shim that consults a cache in the user's temp folder; use the real binary.
+function realGitBin() {
+  if (process.env.BUS_GIT_BIN) return process.env.BUS_GIT_BIN;
+  for (const p of ["/Library/Developer/CommandLineTools/usr/bin/git", "/Applications/Xcode.app/Contents/Developer/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git", "/usr/bin/git"]) {
+    try { if (fs.statSync(p).isFile()) return p; } catch (e) {}
+  }
+  return "git";
 }
-// With no system or global config, a push or ls-remote to an https origin would lose the owner's credential helper. The owner's
-// own credential.* settings are read once, outside any repository (cwd /), and passed on the command line for those calls only.
+const GIT_BIN = realGitBin();
+const FILE_PROTOCOL = process.env.BUS_GIT_FILE_PROTOCOL === "always" ? "always" : "never";
+const GIT_HARDEN = ["--attr-source=" + EMPTY_TREE].concat(...[
+  "core.fsmonitor=false", "core.hooksPath=/dev/null", "core.sshCommand=ssh", "core.askPass=", "core.pager=cat", "core.attributesFile=/dev/null",
+  "core.untrackedCache=false", "diff.external=", "filter.lfs.process=", "filter.lfs.clean=", "filter.lfs.smudge=", "filter.lfs.required=false",
+  "protocol.allow=never", "protocol.https.allow=always", "protocol.ssh.allow=always", "protocol.file.allow=" + FILE_PROTOCOL, "protocol.ext.allow=never",
+  "submodule.recurse=false", "fetch.recurseSubmodules=false", "push.recurseSubmodules=no", "status.submoduleSummary=false", "status.showUntrackedFiles=no",
+  "gc.auto=0", "maintenance.auto=false"].map((kv) => ["-c", kv]));
+// With no system or global config, a push to an https origin would lose the owner's credential helper. The owner's own
+// credential.* settings are read once, from the system and global files only (never a repository), outside any repository.
 let transport = null;
 function transportConfig() {
   if (transport) return transport;
-  transport = ["-c", "credential.helper="];
+  const t = [];
   if (process.env.BUS_GIT_CREDENTIAL_HELPER !== undefined) {
-    if (process.env.BUS_GIT_CREDENTIAL_HELPER) transport.push("-c", "credential.helper=" + process.env.BUS_GIT_CREDENTIAL_HELPER);
-    return transport;
+    if (process.env.BUS_GIT_CREDENTIAL_HELPER) t.push(["credential.helper", process.env.BUS_GIT_CREDENTIAL_HELPER]);
+    return (transport = t);
   }
-  try {
-    const out = execFileSync(GIT_BIN, ["config", "--null", "--get-regexp", "^credential\\."],
-      { cwd: "/", env: { PATH: process.env.PATH || "/usr/bin:/bin", HOME: os.homedir() }, encoding: "utf8", timeout: 10000 });
-    for (const rec of out.split("\0")) {
-      const i = rec.indexOf("\n");
-      if (i > 0 && !/[\n=]/.test(rec.slice(0, i))) transport.push("-c", rec.slice(0, i) + "=" + rec.slice(i + 1));
-    }
-  } catch (e) {}   // no credential config: public remotes and ssh still work
-  return transport;
+  for (const scope of ["--system", "--global"]) {
+    try {
+      const out = execFileSync(GIT_BIN, ["config", scope, "--includes", "--null", "--get-regexp", "^credential\\."],
+        { cwd: "/", env: { PATH: process.env.PATH || "/usr/bin:/bin", HOME: os.homedir(), LANG: "C", LC_ALL: "C", GIT_CEILING_DIRECTORIES: "/" },
+          encoding: "utf8", timeout: 10000, stdio: ["ignore", "pipe", "ignore"] });
+      for (const rec of out.split("\0")) {
+        const i = rec.indexOf("\n");
+        if (i > 0 && /^credential\.[^\n=]+$/.test(rec.slice(0, i)) && !rec.slice(i + 1).includes("\n")) t.push([rec.slice(0, i), rec.slice(i + 1)]);
+      }
+    } catch (e) {}   // no credential config at that scope: public remotes and ssh still work
+  }
+  return (transport = t);
 }
 const NEEDS_TRANSPORT = new Set(["push", "ls-remote", "fetch"]);
-function git(args, cwd, { raw = false } = {}) {
-  const pre = NEEDS_TRANSPORT.has(args[0]) ? GIT_HARDEN.concat(transportConfig()) : GIT_HARDEN;
-  return new Promise((resolve) => execFile(GIT_BIN, pre.concat(args), { cwd, env: gitEnv(cwd), timeout: 120000, maxBuffer: 8 * 1024 * 1024 },
-    (err, stdout, stderr) => resolve({ ok: !err, out: raw ? String(stdout || "") : String(stdout || "").trim(), err: String(stderr || "").trim() })));
+// ctx: a folder (legacy), or { cwd, gitDir, workTree, commonDir, alternates } with the repository pinned explicitly.
+function gitEnv(ctx, { transport: withTransport = false } = {}) {
+  const c = typeof ctx === "object" && ctx ? ctx : { cwd: ctx || "/" };
+  const e = { PATH: process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin", HOME: os.homedir(), LANG: "C", LC_ALL: "C",
+    GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_ATTR_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0",
+    GIT_NO_REPLACE_OBJECTS: "1", GIT_CEILING_DIRECTORIES: path.dirname(path.resolve(c.cwd || "/")) };
+  for (const k of ["USER", "LOGNAME", "SSH_AUTH_SOCK"]) if (process.env[k]) e[k] = process.env[k];
+  if (c.gitDir) e.GIT_DIR = c.gitDir;
+  if (c.workTree) e.GIT_WORK_TREE = c.workTree;
+  if (c.commonDir) e.GIT_COMMON_DIR = c.commonDir;
+  if (c.alternates) e.GIT_ALTERNATE_OBJECT_DIRECTORIES = c.alternates;
+  // credential.helper= first clears any helper list; the owner's settings follow only for transport commands.
+  const cfg = [["credential.helper", ""]].concat(withTransport ? transportConfig() : []);
+  e.GIT_CONFIG_COUNT = String(cfg.length);
+  cfg.forEach(([k, v], i) => { e["GIT_CONFIG_KEY_" + i] = k; e["GIT_CONFIG_VALUE_" + i] = v; });
+  return e;
 }
+function git(args, ctx, { raw = false, input = "" } = {}) {
+  const c = typeof ctx === "object" && ctx ? ctx : { cwd: ctx };
+  return new Promise((resolve) => {
+    const child = execFile(GIT_BIN, GIT_HARDEN.concat(args), { cwd: c.cwd, env: gitEnv(c, { transport: NEEDS_TRANSPORT.has(args[0]) }), timeout: 120000, maxBuffer: 8 * 1024 * 1024 },
+      (err, stdout, stderr) => resolve({ ok: !err, out: raw ? String(stdout || "") : String(stdout || "").trim(), err: String(stderr || "").trim() }));
+    child.stdin.on("error", () => {});
+    child.stdin.end(input);
+  });
+}
+// The source repository (~/Developer/<repo>/.git, which the model cannot write) and the run's worktree, each pinned explicitly.
+const srcCtx = (repo, alternates) => ({ cwd: repo.src, gitDir: repo.commonDir, alternates: alternates ? repo.objects : undefined });
+const wtCtx = (repo) => ({ cwd: repo.cwd, gitDir: repo.gitDir, workTree: repo.cwd, commonDir: repo.commonDir, alternates: repo.objects });
 
-// A branch the bridge will not push or vouch for: it adds or changes a gitlink (mode 160000, a nested repository), a
-// .gitmodules file, or any path with a .git component (including case and HFS/NTFS variants that git treats as .git).
-// Checked on objects only (tree-to-tree and index-to-tree diffs never enter a nested repository), with
-// --ignore-submodules=none so that no setting can hide a gitlink. The index is checked too: git status reads it.
-const IGNORABLE = /[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g;
+// A commit the bridge will not push or vouch for: it adds or changes a gitlink (mode 160000, a nested repository), a
+// .gitmodules file, or any path with a .git component, including the variants git itself treats as .git or .gitmodules:
+// case, trailing dots and spaces, HFS-ignorable characters, NTFS alternate data streams (".git::$INDEX_ALLOCATION"),
+// backslash separators and 8.3 short names (git~1, gitmod~1..4, gi7eba~1..9). Empty .git folders are listed with -t.
+const IGNORABLE = /[​-‏‪-‮⁠-⁯﻿]/g;
 function isGitPath(p) {
-  return String(p).split("/").some((c) => {
-    const n = c.replace(IGNORABLE, "").toLowerCase().replace(/[ .]+$/, "");
-    return n === ".git" || n === "git~1" || n === ".gitmodules";
+  return String(p).split(/[\\/]/).some((c) => {
+    const n = c.replace(IGNORABLE, "").toLowerCase().split(":")[0].replace(/[ .]+$/, "");
+    return n === ".git" || /^git~\d+$/.test(n) || n === ".gitmodules" || /^gitmod~[1-4]$/.test(n) || /^gi7eba~[1-9]$/.test(n);
   });
 }
 function rawRecords(out) {   // `git diff-* -z --raw` output: ":<srcmode> <dstmode> <src> <dst> <status>\0<path>\0"
@@ -120,83 +166,215 @@ function rawRecords(out) {   // `git diff-* -z --raw` output: ":<srcmode> <dstmo
   }
   return recs;
 }
-async function branchSafety(repo) {
-  if (!repo || !repo.cwd || !/^[0-9a-f]{40,64}$/.test(String(repo.base || ""))) return { ok: false, bad: [], reason: "no valid fork point to compare against" };
-  const opts = ["-r", "-z", "--raw", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none"];
-  const committed = await git(["diff-tree"].concat(opts, [repo.base, "HEAD"]), repo.cwd, { raw: true });
-  const staged = await git(["diff-index", "--cached"].concat(opts, ["HEAD"]), repo.cwd, { raw: true });
-  if (!committed.ok || !staged.ok) return { ok: false, bad: [], reason: "could not list the branch's changes" };
-  const recs = [rawRecords(committed.out), rawRecords(staged.out)];
-  if (recs.includes(null)) return { ok: false, bad: [], reason: "could not parse the branch's changes" };
-  const bad = [...new Set([].concat(...recs).filter((r) => r.dst !== "000000" && (r.dst === "160000" || isGitPath(r.path))).map((r) => r.path))];
-  return bad.length ? { ok: false, bad, reason: "adds or changes a gitlink (nested repository), .gitmodules or a .git path" } : { ok: true, bad: [] };
-}
-// The worktree's own git folder and the repository's shared one, as absolute paths, for the run's sandbox (execSettings).
-async function gitDirs(wt) {
-  const g = await git(["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], wt);
-  const [gitDir, commonDir] = g.ok ? g.out.split("\n") : [];
-  return gitDir && commonDir ? { gitDir, commonDir } : {};
-}
-const slug = (s) => String(s || "task").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "task";
-async function prepareRepo(d, task) {
-  const src = path.join(DEV_ROOT, d.repo);
-  if (!fs.existsSync(path.join(src, ".git"))) return { ok: false, reason: "repo " + d.repo + " is not a git repository under ~/Developer" };
-  const wt = path.join(WORK_ROOT, d.task_id, d.repo);
-  await git(["fetch", "--quiet", "--no-recurse-submodules", "origin"], src);   // best effort; offline falls back to the local default branch
-  let start = (await git(["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], src)).out;
-  if (!start) start = "HEAD";
-  if (fs.existsSync(path.join(wt, ".git"))) {   // a retry of the same task continues on its own worktree and branch
-    const b = await git(["rev-parse", "--abbrev-ref", "HEAD"], wt);
-    const base = await git(["merge-base", "HEAD", start], wt);   // the fork point, so earlier attempts' commits still count
-    return b.ok && /^chatgpt\//.test(b.out) && base.ok ? Object.assign({ ok: true, cwd: wt, branch: b.out, base: base.out, reused: true }, await gitDirs(wt)) : { ok: false, reason: "existing worktree is not on a chatgpt/ branch" };
+const unsafe = (recs) => recs.filter((r) => r.dst !== "000000" && (r.dst === "160000" || isGitPath(r.path))).map((r) => r.path);
+const DIFF_OPTS = ["-r", "-z", "--raw", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none"];
+const BAD_REASON = "adds or changes a gitlink (nested repository), .gitmodules or a .git path";
+// Every commit in base..tip, each against each of its parents (a root commit against the empty tree), on objects only.
+async function commitsSafety(ctx, base, tip) {
+  const no = (reason, bad) => ({ ok: false, bad: bad || [], reason });
+  if (!OID.test(String(base || "")) || !OID.test(String(tip || ""))) return no("has no valid fork point or tip to compare");
+  if (base === tip) return { ok: true, bad: [], count: 0 };
+  if (!(await git(["merge-base", "--is-ancestor", base, tip], ctx)).ok) return no("does not descend from its fork point");
+  const list = await git(["rev-list", "--parents", "--max-count=" + (MAX_COMMITS + 1), base + ".." + tip, "--"], ctx);
+  if (!list.ok) return no("could not list the branch's commits");
+  const lines = list.out ? list.out.split("\n") : [];
+  if (lines.length > MAX_COMMITS) return no("has more than " + MAX_COMMITS + " commits to check");
+  const bad = new Set();
+  for (const line of lines) {
+    const [c, ...parents] = line.split(" ");
+    if (!OID.test(c) || parents.some((p) => !OID.test(p))) return no("could not parse the branch's commits");
+    for (const p of parents.length ? parents : [EMPTY_TREE]) {
+      const d = await git(["diff-tree", "-t"].concat(DIFF_OPTS, [p, c]), ctx, { raw: true });
+      const recs = d.ok ? rawRecords(d.out) : null;
+      if (!recs) return no("could not list a commit's changes");
+      unsafe(recs).forEach((x) => bad.add(x));
+    }
   }
-  const branch = "chatgpt/" + d.task_id + "-" + slug(task.name);
-  const exists = (await git(["rev-parse", "--verify", "--quiet", "refs/heads/" + branch], src)).ok;
-  fs.mkdirSync(path.dirname(wt), { recursive: true });
-  const add = await git(exists ? ["worktree", "add", wt, branch] : ["worktree", "add", "-b", branch, wt, start], src);
-  if (!add.ok) return { ok: false, reason: "could not create a worktree: " + add.err.slice(0, 160) };
-  const base = await git(["rev-parse", "HEAD"], wt);
-  return Object.assign({ ok: true, cwd: wt, branch, base: base.out }, await gitDirs(wt));
+  return bad.size ? no(BAD_REASON, [...bad]) : { ok: true, bad: [], count: lines.length };
 }
 
-// The bridge pushes the task branch itself, with an explicit same-name refspec and no force: the model's allowlist has no
-// working push rule (Bash(git push -u origin chatgpt/:*) never matches a real branch name), and a wildcard rule would also
-// admit extra refspecs such as main. Pushed only when the run made commits, and never a branch that fails branchSafety().
+// The run's own folder: ~/.agent-bus/exec/<task id>/<run id>, made new (never reused) under the real exec root.
+function newRun(taskId) {
+  if (!ID.test(String(taskId))) throw new Error("invalid task id");
+  fs.mkdirSync(WORK_ROOT, { recursive: true });
+  const root = fs.realpathSync(WORK_ROOT);
+  const taskDir = path.join(root, String(taskId));
+  try { fs.mkdirSync(taskDir, { mode: 0o700 }); } catch (e) { if (e.code !== "EEXIST") throw e; }
+  const st = fs.lstatSync(taskDir);
+  if (st.isSymbolicLink() || !st.isDirectory() || fs.realpathSync(taskDir) !== taskDir) throw new Error("the task folder is not a plain folder");
+  const id = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z") + "-" + crypto.randomBytes(12).toString("hex");
+  const dir = path.join(taskDir, id);
+  fs.mkdirSync(dir, { mode: 0o700 });   // not recursive: fails if anything is already there
+  return { id, dir, taskDir, root };
+}
+
+// The worktree must still be exactly the one the bridge made: no symlink in its path, .git a regular file naming the
+// recorded git folder under ~/Developer/<repo>/.git/worktrees, whose back-pointer and commondir lead back to the work tree
+// and the source repository, and whose HEAD is still the symbolic ref to this run's branch. Checked before every bridge git
+// call that touches the worktree; any mismatch refuses the branch.
+function validateWorktree(repo) {
+  const no = (why) => ({ ok: false, why, reason: "the run's worktree failed validation (" + why + ")" });
+  try {
+    if (!repo || !repo.cwd || !repo.gitDir || !repo.commonDir || !repo.runRef || !repo.src || !repo.runDir) return no("no worktree record");
+    const sl = fs.lstatSync(path.join(repo.src, ".git"));
+    if (sl.isSymbolicLink() || !sl.isDirectory() || fs.realpathSync(path.join(repo.src, ".git")) !== repo.commonDir) return no("source repository changed");
+    const wt = repo.cwd;
+    if (path.dirname(wt) !== repo.runDir || fs.realpathSync(wt) !== wt || !fs.lstatSync(wt).isDirectory()) return no("work tree path is not the plain folder the bridge made");
+    const dotgit = path.join(wt, ".git"), ds = fs.lstatSync(dotgit);
+    if (!ds.isFile() || ds.size > 4096) return no(".git is not a regular file");
+    const m = fs.readFileSync(dotgit, "utf8").match(/^gitdir: ([^\n]+)\n?$/);
+    if (!m || fs.realpathSync(path.resolve(wt, m[1])) !== repo.gitDir) return no(".git does not point at the recorded git folder");
+    if (path.dirname(repo.gitDir) !== path.join(repo.commonDir, "worktrees") || fs.realpathSync(repo.gitDir) !== repo.gitDir || !fs.lstatSync(repo.gitDir).isDirectory())
+      return no("git folder is not under the source repository's worktrees");
+    const back = path.join(repo.gitDir, "gitdir"), common = path.join(repo.gitDir, "commondir"), head = path.join(repo.gitDir, "HEAD");
+    for (const f of [back, common, head]) if (!fs.lstatSync(f).isFile()) return no(path.basename(f) + " is not a regular file");
+    if (fs.realpathSync(path.resolve(repo.gitDir, fs.readFileSync(back, "utf8").trim())) !== dotgit) return no("gitdir back-pointer does not lead to the work tree");
+    if (fs.realpathSync(path.resolve(repo.gitDir, fs.readFileSync(common, "utf8").trim())) !== repo.commonDir) return no("commondir does not lead to the source repository");
+    if (fs.readFileSync(head, "utf8") !== "ref: refs/heads/" + repo.runRef + "\n") return no("HEAD is not the symbolic ref to this run's branch");
+    if (fs.existsSync(path.join(repo.gitDir, "config.worktree"))) return no("config.worktree present");
+  } catch (e) { return no(e.code || "unreadable"); }
+  return { ok: true };
+}
+
+const slug = (s) => String(s || "task").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "task";
+const resolveCommit = async (ctx, ref) => {
+  const r = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", ref + "^{commit}"], ctx);
+  return r.ok && OID.test(r.out) ? r.out : "";
+};
+// The default branch, from the source repository only: never "HEAD" and never the task branch.
+async function defaultBranch(ctx) {
+  const sym = await git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], ctx);
+  for (const ref of [sym.ok ? sym.out : "", "refs/remotes/origin/main", "refs/remotes/origin/master", "refs/heads/main", "refs/heads/master"]) {
+    if (ref && /^refs\/(remotes\/origin|heads)\/[A-Za-z0-9._\/-]+$/.test(ref) && (await resolveCommit(ctx, ref))) return ref;
+  }
+  return "";
+}
+async function prepareRepo(d, task, run) {
+  const src = path.join(DEV_ROOT, d.repo);
+  let sl; try { sl = fs.lstatSync(path.join(src, ".git")); } catch (e) {}
+  if (!sl) return { ok: false, reason: "repo " + d.repo + " is not a git repository under ~/Developer" };
+  if (sl.isSymbolicLink() || !sl.isDirectory()) return { ok: false, reason: "repo " + d.repo + " is not a primary checkout (its .git must be a folder)" };
+  if (!run || !run.dir) return { ok: false, reason: "no run folder" };
+  const commonDir = fs.realpathSync(path.join(src, ".git"));
+  const repo = { src, commonDir, runDir: run.dir, runId: run.id, objects: path.join(run.dir, "objects") };
+  const sctx = srcCtx(repo);
+  repo.url = (await git(["config", "--get", "remote.origin.url"], sctx)).out;   // from the source repository's own config
+  let def = await defaultBranch(sctx);
+  const m = /^refs\/remotes\/origin\/(.+)$/.exec(def);
+  if (repo.url && m) {   // best effort; offline falls back to the last fetched state
+    await git(["fetch", "--quiet", "--no-tags", "--no-recurse-submodules", "--no-write-fetch-head", repo.url, "+refs/heads/" + m[1] + ":" + def], sctx);
+  }
+  const defSha = def && await resolveCommit(sctx, def);
+  if (!defSha) return { ok: false, reason: "repo " + d.repo + " has no default branch (origin/HEAD, origin/main or main) to start from" };
+  repo.branch = "chatgpt/" + d.task_id + "-" + slug(task.name);
+  repo.existing = await resolveCommit(sctx, "refs/heads/" + repo.branch);
+  repo.start = repo.existing || defSha;
+  const mb = await git(["merge-base", repo.start, defSha], sctx);
+  if (!mb.ok || !OID.test(mb.out)) return { ok: false, reason: "the task branch " + repo.branch + " has no fork point with " + def };
+  repo.base = mb.out;   // the fork point from the trusted default branch, never the branch's own tip
+  if (repo.existing) {   // a retry continues from the branch the bridge recorded, but only if every commit on it passes
+    const s = await commitsSafety(sctx, repo.base, repo.existing);
+    if (!s.ok) return { ok: false, reason: "the existing task branch " + repo.branch + " " + s.reason + (s.bad.length ? ": " + s.bad.slice(0, 5).join(", ") : "") + "; the bridge will not continue it" };
+  }
+  repo.runRef = "chatgpt-run/" + d.task_id + "/" + run.id;
+  repo.cwd = path.join(run.dir, d.repo);
+  const add = await git(["worktree", "add", "--quiet", "--no-track", "-b", repo.runRef, repo.cwd, repo.start], sctx);
+  if (!add.ok) return { ok: false, reason: "could not create a worktree: " + add.err.slice(0, 160) };
+  try {   // recorded now, before the model runs; validateWorktree compares against it later
+    const line = fs.readFileSync(path.join(repo.cwd, ".git"), "utf8").match(/^gitdir: ([^\n]+)\n?$/);
+    repo.gitDir = line ? fs.realpathSync(path.resolve(repo.cwd, line[1])) : "";
+    for (const sub of ["pack", "info"]) fs.mkdirSync(path.join(repo.objects, sub), { recursive: true, mode: 0o700 });
+    const reflog = path.join(commonDir, "logs", "refs", "heads", ...repo.runRef.split("/"));
+    fs.mkdirSync(path.dirname(reflog), { recursive: true });
+    fs.closeSync(fs.openSync(reflog, "a"));   // exists, so a commit appends to it and never needs to create folders
+  } catch (e) { return { ok: false, reason: "could not record the worktree (" + (e.code || e.message) + ")" }; }
+  const v = validateWorktree(repo);
+  if (!v.ok) return { ok: false, reason: v.reason };
+  return Object.assign(repo, { ok: true });
+}
+// The run branch, read once to one sha (objects may sit in the run's own object folder).
+async function runSha(repo) {
+  const r = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", "refs/heads/" + repo.runRef + "^{commit}"], srcCtx(repo, true));
+  return r.ok && OID.test(r.out) ? r.out : "";
+}
+async function branchSafety(repo) {
+  const no = (reason, extra) => Object.assign({ ok: false, bad: [], reason }, extra);
+  const v = validateWorktree(repo);
+  if (!v.ok) return no("comes from a worktree that failed validation (" + v.why + ")");
+  const sha = await runSha(repo);
+  if (!sha) return no("does not resolve to a commit");
+  const s = await commitsSafety(srcCtx(repo, true), repo.base, sha);
+  if (!s.ok) return Object.assign(s, { sha });
+  // The index too: the bridge's own git status reads it.
+  const staged = await git(["diff-index", "--cached"].concat(DIFF_OPTS, [sha]), wtCtx(repo), { raw: true });
+  const recs = staged.ok ? rawRecords(staged.out) : null;
+  if (!recs) return no("could not list the staged changes", { sha });
+  const bad = unsafe(recs);
+  return bad.length ? no(BAD_REASON, { bad, sha }) : { ok: true, bad: [], sha, count: s.count };
+}
+// Copy the checked commits' objects from the run's object folder into the repository; index-pack --strict also fsck-checks them.
+function importObjects(repo, sha) {
+  return new Promise((resolve) => {
+    let err = "", codes = {}, settled = false;
+    const end = (ok) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ ok, err: err.trim().slice(0, 300) }); } };
+    const pack = spawn(GIT_BIN, GIT_HARDEN.concat(["pack-objects", "--revs", "--stdout", "--quiet"]), { cwd: repo.src, env: gitEnv(srcCtx(repo, true)) });
+    const idx = spawn(GIT_BIN, GIT_HARDEN.concat(["index-pack", "--stdin", "--strict"]), { cwd: repo.src, env: gitEnv(srcCtx(repo)) });
+    const timer = setTimeout(() => { pack.kill(); idx.kill(); end(false); }, 120000);
+    for (const c of [pack, idx]) { c.stderr.on("data", (b) => { err += b; }); c.on("error", () => end(false)); c.stdin.on("error", () => {}); }
+    pack.stdout.pipe(idx.stdin);
+    idx.stdout.resume();
+    const close = (k) => (code) => { codes[k] = code; if ("pack" in codes && "idx" in codes) end(codes.pack === 0 && codes.idx === 0); };
+    pack.on("close", close("pack")); idx.on("close", close("idx"));
+    pack.stdin.end(sha + "\n^" + repo.base + "\n");
+  });
+}
+
+// The bridge pushes the task branch itself: never a branch that fails branchSafety(), only the one sha it checked, under
+// the branch name it derived, to the source repository's own remote URL, with no force and no hooks.
 async function pushBranch(repo, safety) {
-  if (!/^chatgpt\/[0-9]+-[a-z0-9-]+$/.test(repo.branch)) return { ok: false, out: "", err: "refused: not a task branch" };
+  if (!repo || !/^chatgpt\/[0-9]+-[a-z0-9-]+$/.test(repo.branch)) return { ok: false, out: "", err: "refused: not a task branch" };
   const s = safety || await branchSafety(repo);
   if (!s.ok) return { ok: false, out: "", err: "refused: the branch " + s.reason + (s.bad.length ? ": " + s.bad.slice(0, 5).join(", ") : "") };
-  const n = await git(["rev-list", "--count", repo.base + "..HEAD"], repo.cwd);
-  if (!n.ok || Number(n.out) === 0) return { ok: true, skipped: true };
-  return git(["push", "--quiet", "--no-verify", "--no-recurse-submodules", "-u", "origin", "refs/heads/" + repo.branch + ":refs/heads/" + repo.branch], repo.cwd);
+  if (s.sha === repo.base) return { ok: true, skipped: true, sha: s.sha };
+  if (s.sha !== repo.start) {
+    const imp = await importObjects(repo, s.sha);
+    if (!imp.ok) return { ok: false, out: "", err: "refused: the commits' objects did not pass index-pack --strict: " + imp.err };
+    const up = await git(["update-ref", "-m", "chatgpt run " + repo.runId, "refs/heads/" + repo.branch, s.sha, repo.existing || ZERO_OID], srcCtx(repo));
+    if (!up.ok) return { ok: false, out: "", err: "could not move " + repo.branch + ": " + up.err.slice(0, 160) };
+  }
+  if (!repo.url) return { ok: false, out: "", err: "no remote.origin.url in ~/Developer's copy of the repository" };
+  const p = await git(["push", "--quiet", "--no-verify", "--no-recurse-submodules", repo.url, s.sha + ":refs/heads/" + repo.branch], srcCtx(repo));
+  return Object.assign(p, { sha: s.sha });
 }
 
 // What the bridge itself checked after the run. This, not the model's report, is the verifiable evidence.
-// Every git call here is hardened (see git()); the status check also stays out of nested repositories. A branch that fails
-// branchSafety() is reported as REFUSED: execute() does not push it and ends the run BLOCKED.
+// Nothing here runs git in a worktree that fails validateWorktree(); a branch that fails branchSafety() is reported as
+// REFUSED, and execute() does not push it and ends the run BLOCKED.
 async function verify(cwd, repo, safety) {
   const lines = ["BRIDGE-VERIFIED EVIDENCE (checked by the Mac bridge after the run, not reported by the model):"];
   if (repo) {
-    const s = safety || await branchSafety(Object.assign({}, repo, { cwd }));
-    const head = await git(["rev-parse", "HEAD"], cwd);
-    const n = await git(["rev-list", "--count", repo.base + "..HEAD"], cwd);
-    const log = await git(["log", "--oneline", "--no-decorate", "--ignore-submodules=all", "-5", repo.base + "..HEAD"], cwd);
-    const dirty = await git(["status", "--porcelain", "--ignore-submodules=all"], cwd);
-    const remote = await git(["ls-remote", "--heads", "origin", repo.branch], cwd);
-    const pushed = remote.ok && remote.out.split(/\s+/)[0] === head.out;
-    lines.push("- repo worktree: " + cwd, "- branch " + repo.branch + " at " + head.out.slice(0, 12) + "; " + (n.out || "0") + " new commit(s) since " + String(repo.base).slice(0, 12));
+    const s = safety || await branchSafety(repo);
+    const valid = validateWorktree(repo);
+    const sha = s.sha || "";
+    const n = sha ? await git(["rev-list", "--count", repo.base + ".." + sha, "--"], srcCtx(repo, true)) : { out: "0" };
+    const log = sha ? await git(["log", "--oneline", "--no-decorate", "--no-show-signature", "-5", repo.base + ".." + sha, "--"], srcCtx(repo, true)) : { out: "" };
+    const dirty = valid.ok ? await git(["status", "--porcelain", "--ignore-submodules=all", "--untracked-files=no"], wtCtx(repo)) : null;
+    const remote = repo.url ? await git(["ls-remote", "--heads", repo.url, "refs/heads/" + repo.branch], srcCtx(repo)) : { ok: false, out: "" };
+    const remoteSha = remote.ok ? remote.out.split(/\s+/)[0] : "";
+    lines.push("- repo worktree: " + repo.cwd + " (run branch " + repo.runRef + ")",
+      "- branch " + repo.branch + " at " + (sha ? sha.slice(0, 12) : "unknown") + "; " + (n.out || "0") + " new commit(s) since " + String(repo.base).slice(0, 12));
     if (log.out) lines.push(...log.out.split("\n").map((l) => "    " + l));
     if (!s.ok) lines.push("- REFUSED: the branch " + s.reason + (s.bad.length ? ": " + s.bad.slice(0, 5).join(", ") : "") + ". The bridge does not push it.");
-    lines.push("- working tree: " + (dirty.out ? dirty.out.split("\n").length + " uncommitted change(s)" : "clean"),
-      "- pushed to origin: " + (pushed ? "yes, remote head matches" : remote.out ? "remote differs from local head" : "no"));
+    lines.push("- working tree: " + (!dirty ? "not checked (worktree failed validation)" : !dirty.ok ? "not checked (git status failed)" : dirty.out ? dirty.out.split("\n").length + " uncommitted change(s)" : "clean"),
+      "- pushed to origin: " + (remoteSha && remoteSha === sha && s.ok ? "yes, remote head matches" : remoteSha ? "remote differs from the checked head" : "no"));
   }
   const files = [];
   const walk = (dir, rel) => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     if (e.name === ".git" || files.length >= 20) continue;
     const p = path.join(dir, e.name), r = rel ? rel + "/" + e.name : e.name;
     if (e.isDirectory()) { if (!repo) walk(p, r); } else if (e.isFile()) {
-      const st = fs.statSync(p);
-      files.push("    " + r + " (" + st.size + " bytes, sha256 " + require("crypto").createHash("sha256").update(fs.readFileSync(p)).digest("hex").slice(0, 16) + ")");
+      const st = fs.lstatSync(p);
+      if (st.isFile()) files.push("    " + r + " (" + st.size + " bytes, sha256 " + require("crypto").createHash("sha256").update(fs.readFileSync(p)).digest("hex").slice(0, 16) + ")");
     } } };
   if (!repo) { try { walk(cwd, ""); } catch (e) {} lines.push("- files in the work folder: " + (files.length ? "" : "none")); lines.push(...files); }
   return lines.join("\n");
@@ -222,9 +400,9 @@ function prompt(task, d, cid, repo) {
     "- Your tools are limited by policy; a denied tool means the action is not allowed, not that you should find another way.\n" +
     "- Run each shell command on its own with absolute paths, exactly as allowed (e.g. node --test /abs/path/file.test.js). Never use cd, &&, ;, | or redirection: compound commands are denied.\n" +
     (repo
-      ? "- Your current working folder is a git worktree of the repository " + d.repo + ", already on branch " + repo.branch + ". Make the code change here (not in ~/Developer/" + d.repo + "), " +
-        "then commit with plain git commands in this folder, never git -C: git status, git log, git diff, git add <files>, git commit -m \"...\". Do not push and never switch branches: " +
-        "after you finish, the bridge itself pushes exactly this branch (never main) and checks the result.\n"
+      ? "- Your current working folder is a new git worktree of the repository " + d.repo + ", already on this run's own branch " + repo.runRef + " (started from " + repo.branch + "). Make the code change here (not in ~/Developer/" + d.repo + "), " +
+        "then commit with plain git commands in this folder, never git -C: git status, git log, git diff, git add <files>, git commit -m \"...\". Do not push, never switch branches and never move HEAD: " +
+        "after you finish, the bridge itself checks every commit on this branch and pushes them to " + repo.branch + " (never main).\n"
       : "- Documents and other new deliverables go in your current working folder; a file there is a complete deliverable and needs no git.\n" +
         "- You cannot commit to a repository in this run (no repository was named with the task). If the task needs a code change in a repository, make no edits there and report \"BLOCKED: resend delegate_task with repo set to the folder name under ~/Developer\".\n") +
     "Finish with a short report: what you did, evidence (files, commit ids, test output), what is left, then a final line \"STATUS: COMPLETE\" or \"STATUS: BLOCKED: <reason>\".\n" +
@@ -239,31 +417,31 @@ function prompt(task, d, cid, repo) {
     "Each field is at most 1000 characters. Omit what you have nothing for. Definition of Done, Evidence Required and Execution Actor are kept if already set. Execution Actor must be one of: Claude, Damian, Arsalan, Muse, Claude Code, SysAuto, SalesM, Finance, Codex, GPT, Mary Alice, Biz Operations, Compliance, OpenClaw Agent, Other, Notebook. Use \"Claude Code\" for work you are doing yourself. At most 3 issues, only for real problems.";
 }
 
-// The run's own folder, ~/.agent-bus/exec/<task id>: the cwd itself, or the folder that holds the repository worktree.
-function runFolder(cwd) {
-  const rel = path.relative(WORK_ROOT, path.resolve(cwd));
-  return !rel || rel.startsWith("..") || path.isAbsolute(rel) ? path.resolve(cwd) : path.join(WORK_ROOT, rel.split(path.sep)[0]);
-}
-// The settings for one run: executor-settings.json plus this run's own paths. The file tools may write only in the run's own
-// folder (not other runs' folders or worktrees, and never the bridge's .running.json marker). Every shell command the model runs
-// (git, the test runners and any code they execute) is OS-sandboxed with the same limit, plus, for a repository task, the git
-// metadata a commit on its own chatgpt/ branch needs. The files git reads as configuration or runs as hooks stay read-only, and
-// the bridge's own git commands are hardened against what the model can write (see git() and branchSafety()).
+// The settings for one run: executor-settings.json plus this run's own paths. The file tools may write only the run's own work
+// tree (its folder ~/.agent-bus/exec/<task id>/<run id>, or for a repository run the worktree inside it), never a .git pointer
+// or the bridge's .running.json marker. Every shell command the model runs (git, the test runners and any code they execute)
+// is OS-sandboxed with the same limit, plus, for a repository task, what a commit on its own run branch needs: the worktree's
+// git folder (index, logs) but not its HEAD, refs, config or pointer files; its own object folder (the repository's shared
+// objects are read-only, reached as an alternate); and its own run branch ref, its lock and its reflog. Nothing else under the
+// repository's .git, and no other run's folder, is writable. The bridge moves the task branch itself after checking it.
 // Passed as a JSON string, so no settings file is written where the model could change it.
+const markers = () => { let r = MARKER; try { r = path.join(fs.realpathSync(WORK_ROOT), ".running.json"); } catch (e) {} return [...new Set([MARKER, r])]; };
 function execSettings(cwd, repo) {
   const s = JSON.parse(fs.readFileSync(SETTINGS, "utf8"));
-  const run = runFolder(cwd);
-  const fsRules = { allowWrite: [run], denyWrite: [path.join(cwd, ".git"), MARKER] };
-  if (repo && repo.gitDir && repo.commonDir) {
-    fsRules.allowWrite.push(repo.gitDir, path.join(repo.commonDir, "objects"), path.join(repo.commonDir, "refs", "heads", "chatgpt"),
-      path.join(repo.commonDir, "logs", "refs", "heads", "chatgpt"));
-    fsRules.denyWrite.push(path.join(repo.gitDir, "commondir"), path.join(repo.gitDir, "gitdir"), path.join(repo.gitDir, "config.worktree"),
-      path.join(repo.commonDir, "config"), path.join(repo.commonDir, "hooks"));
+  let files, fsRules;
+  if (repo && repo.gitDir && repo.commonDir && repo.runRef && repo.objects && repo.cwd) {
+    const ref = path.join(repo.commonDir, "refs", "heads", ...repo.runRef.split("/"));
+    files = repo.cwd;
+    fsRules = { allowWrite: [repo.cwd, repo.gitDir, repo.objects, ref, ref + ".lock", path.join(repo.commonDir, "logs", "refs", "heads", ...repo.runRef.split("/"))],
+      denyWrite: [path.join(repo.cwd, ".git"), ...markers(), ...["HEAD", "refs", "config", "commondir", "gitdir", "config.worktree", "hooks"].map((f) => path.join(repo.gitDir, f)),
+        path.join(repo.commonDir, "config"), path.join(repo.commonDir, "hooks")] };
+  } else {
+    files = path.resolve(cwd);
+    fsRules = { allowWrite: [files], denyWrite: [path.join(files, ".git"), ...markers()] };
   }
-  // The file tools may write in the run's own folder only, never the worktree's .git pointer or the marker ("//" starts an
-  // absolute path in a rule). The static settings have no Write or Edit allow rule of their own.
-  s.permissions.allow.push("Edit(/" + run + "/**)", "Write(/" + run + "/**)");
-  s.permissions.deny.push("Edit(/" + path.join(cwd, ".git") + ")", "Write(/" + path.join(cwd, ".git") + ")", "Edit(/" + MARKER + ")", "Write(/" + MARKER + ")");
+  // "//" starts an absolute path in a rule. The static settings have no Write or Edit allow rule of their own.
+  s.permissions.allow.push("Edit(/" + files + "/**)", "Write(/" + files + "/**)");
+  for (const p of [path.join(files, ".git"), ...markers()]) s.permissions.deny.push("Edit(/" + p + ")", "Write(/" + p + ")");
   s.sandbox = Object.assign({}, s.sandbox, { filesystem: fsRules });
   return JSON.stringify(s);
 }
@@ -347,19 +525,22 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
     const task = await check(d.project_id, d.task_id);
     if (!task || !task.ok) return post("result", "STATUS: BLOCKED: task " + d.task_id + " is not usable: " + ((task && task.reason) || "lookup failed") + ". Only open tasks in Damian's system of record can be delegated.");
     if (!task.open) return post("result", "STATUS: BLOCKED: task " + d.task_id + " (" + task.name + ") is closed.");
-    let repo = null, cwd = path.join(WORK_ROOT, d.task_id);
+    let runDir;
+    try { runDir = newRun(d.task_id); } catch (e) { return post("result", "STATUS: BLOCKED: could not make a new run folder (" + String(e.code || e.message).slice(0, 80) + ")."); }
+    let repo = null, cwd = runDir.dir, runEnv = childEnv;
     if (d.repo) {
-      repo = await prepareRepo(d, task);
+      repo = await prepareRepo(d, task, runDir);
       if (!repo.ok) return post("result", "STATUS: BLOCKED: " + repo.reason + ".");
       cwd = repo.cwd;
+      // The model's git writes new objects to the run's own object folder; the repository's objects are read through an alternate.
+      runEnv = Object.assign({}, childEnv, { GIT_OBJECT_DIRECTORY: repo.objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(repo.commonDir, "objects") });
     }
     await post("ack", "STATUS: STARTED " + cid + " on task " + d.task_id + " (" + task.name + ")" + (repo ? " in " + d.repo + " on branch " + repo.branch : "") + ". The result will follow on this correlation id.");
-    fs.mkdirSync(cwd, { recursive: true });
     fs.writeFileSync(MARKER, JSON.stringify({ cid, task_id: d.task_id, at: new Date().toISOString() }));
-    log("delegated task", d.task_id, "started for", cid, repo ? "in " + cwd : "");
-    const r = await run(claudeBin, prompt(task, d, cid, repo), cwd, childEnv, repo);
+    log("delegated task", d.task_id, "started for", cid, "in", cwd);
+    const r = await run(claudeBin, prompt(task, d, cid, repo), cwd, runEnv, repo);
     const safety = repo ? await branchSafety(repo) : null;
-    if (repo) { const p = await pushBranch(repo, safety); if (!p.ok) log("delegated task", d.task_id, "push failed:", p.err.slice(0, 200)); }
+    if (repo && safety.ok) { const p = await pushBranch(repo, safety); if (!p.ok) log("delegated task", d.task_id, "push failed:", p.err.slice(0, 200)); }
     const evidence = await verify(cwd, repo, safety).catch((e) => "BRIDGE-VERIFIED EVIDENCE: the check failed (" + String(e.message || e).slice(0, 80) + ").");
     log("delegated task", d.task_id, "evidence:", evidence.replace(/\n/g, " | ").slice(0, 300));
     // A refused branch ends the run here: not pushed, nothing written to Zoho, and BLOCKED whatever the model reported.
@@ -380,4 +561,4 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
 }
 
 module.exports = { delegation, execute, recoverInterrupted, maskIds, prompt, checkTask, runClaude, updateTask, splitReport, summarize, prepareRepo, verify, execArgs, execSettings, EXEC_TOOLS, SETTINGS,
-  git, gitEnv, GIT_HARDEN, branchSafety, isGitPath, pushBranch, runFolder, MARKER };
+  git, gitEnv, GIT_HARDEN, branchSafety, commitsSafety, validateWorktree, isGitPath, pushBranch, newRun, transportConfig, GIT_BIN, MARKER };

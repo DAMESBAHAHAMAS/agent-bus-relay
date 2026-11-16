@@ -33,13 +33,12 @@ before(() => {
 });
 after(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
-// A fresh worktree on its own chatgpt/ branch, as prepareRepo() makes it.
-function worktree() {
-  const id = String(7000000 + ++n), wt = path.join(TMP, "exec", id, "demo"), branch = "chatgpt/" + id + "-x";
-  fs.mkdirSync(path.dirname(wt), { recursive: true });
-  g(LIVE, "worktree", "add", "-q", "-b", branch, wt, "main");
-  const [gitDir, commonDir] = g(wt, "rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir").split("\n");
-  return { cwd: wt, branch, base: g(wt, "rev-parse", "HEAD"), gitDir, commonDir };
+// A fresh run folder and worktree on the run's own branch, made by the bridge's own prepareRepo().
+async function worktree() {
+  const id = String(7000000 + ++n);
+  const repo = await executor.prepareRepo({ repo: "demo", task_id: id }, { name: "x" }, executor.newRun(id));
+  assert.ok(repo.ok, repo.reason);
+  return repo;
 }
 // The chain the model can build from inside its sandbox (all of it is in its own folder), then commit as a gitlink.
 function chain(wt, variant, mark) {
@@ -66,10 +65,12 @@ function chain(wt, variant, mark) {
 const ran = (mark) => fs.existsSync(mark);
 
 test("every bridge git call carries the hardening flags and a minimal environment", async () => {
-  const repo = worktree();
+  const repo = await worktree();
   process.env.SA5T225_SECRET_SENTINEL = "x"; process.env.GIT_DIR = "/nonexistent";   // set in the bridge's environment: not passed on
   try {
-    for (const [k, v] of [["core.fsmonitor", "false"], ["core.hooksPath", "/dev/null"], ["protocol.file.allow", "never"], ["submodule.recurse", "false"]]) {
+    for (const [k, v] of [["core.fsmonitor", "false"], ["core.hooksPath", "/dev/null"], ["protocol.file.allow", "never"], ["submodule.recurse", "false"],
+      ["core.sshCommand", "ssh"], ["core.askPass", ""], ["protocol.allow", "never"], ["protocol.ext.allow", "never"], ["diff.external", ""], ["filter.lfs.process", ""],
+      ["core.attributesFile", "/dev/null"], ["core.pager", "cat"], ["credential.helper", ""]]) {
       const r = await executor.git(["config", "--get", k], repo.cwd);
       assert.equal(r.out, v, k);
     }
@@ -84,7 +85,7 @@ test("every bridge git call carries the hardening flags and a minimal environmen
 
 for (const variant of ["sepdir", "gitfile"]) {
   test("nested repository (" + variant + ") with core.fsmonitor: live with plain git status, never run by the bridge", async () => {
-    const repo = worktree(), mark = path.join(TMP, "fsmonitor-" + variant + "-" + n + ".txt");
+    const repo = await worktree(), mark = path.join(TMP, "fsmonitor-" + variant + "-" + n + ".txt");
     chain(repo.cwd, variant, mark);
     g(repo.cwd, "status", "--porcelain");
     assert.ok(ran(mark), "control: plain `git status` in the worktree runs the nested repository's fsmonitor command");
@@ -103,31 +104,32 @@ for (const variant of ["sepdir", "gitfile"]) {
 }
 
 test("branchSafety: refuses gitlinks (committed or only staged), .gitmodules and .git paths; allows ordinary work and a gitlink's removal", async () => {
-  let repo = worktree();
+  let repo = await worktree();
   fs.writeFileSync(path.join(repo.cwd, "ok.js"), "1\n"); g(repo.cwd, "add", "ok.js"); g(repo.cwd, "commit", "-qm", "ok");
-  assert.deepEqual(await executor.branchSafety(repo), { ok: true, bad: [] });
+  const okRes = await executor.branchSafety(repo);
+  assert.ok(okRes.ok && okRes.bad.length === 0 && okRes.sha === g(repo.cwd, "rev-parse", "HEAD"), JSON.stringify(okRes));
 
-  repo = worktree();
+  repo = await worktree();
   fs.writeFileSync(path.join(repo.cwd, ".gitmodules"), "[submodule \"x\"]\n\tpath = x\n\turl = ./x\n"); g(repo.cwd, "add", ".gitmodules"); g(repo.cwd, "commit", "-qm", "m");
   assert.deepEqual((await executor.branchSafety(repo)).bad, [".gitmodules"]);
 
-  repo = worktree();
+  repo = await worktree();
   const sha = g(repo.cwd, "rev-parse", "HEAD");
   g(repo.cwd, "update-index", "--add", "--cacheinfo", "160000," + sha + ",staged-only");   // staged, never committed
   assert.deepEqual((await executor.branchSafety(repo)).bad, ["staged-only"]);
 
-  repo = worktree();   // a tree with a ".GIT" folder, built with mktree (git add would refuse it) and committed on the branch
+  repo = await worktree();   // a tree with a ".GIT" folder, built with mktree (git add would refuse it) and committed on the branch
   const blob = g(repo.cwd, "hash-object", "-w", "README.md");
   const sub = execFileSync("git", ["mktree"], { cwd: repo.cwd, input: "100644 blob " + blob + "\tconfig\n", encoding: "utf8" }).trim();
   const top = execFileSync("git", ["mktree"], { cwd: repo.cwd, input: "040000 tree " + sub + "\t.GIT\n100644 blob " + blob + "\tREADME.md\n", encoding: "utf8" }).trim();
-  const c = g(repo.cwd, "commit-tree", top, "-p", "HEAD", "-m", "dotgit"); g(repo.cwd, "update-ref", "refs/heads/" + repo.branch, c);   // the index cannot hold it
-  assert.deepEqual((await executor.branchSafety(repo)).bad, [".GIT/config"]);
+  const c = g(repo.cwd, "commit-tree", top, "-p", "HEAD", "-m", "dotgit"); g(repo.cwd, "update-ref", "refs/heads/" + repo.runRef, c);   // the index cannot hold it
+  assert.deepEqual((await executor.branchSafety(repo)).bad, [".GIT", ".GIT/config"]);   // -t lists the folder itself too
 
-  repo = worktree();   // removing a gitlink that is already on the base is allowed
+  repo = await worktree();   // removing a gitlink that is already on the base is allowed
   g(repo.cwd, "update-index", "--add", "--cacheinfo", "160000," + sha + ",old-sub"); g(repo.cwd, "commit", "-qm", "with sub");
   repo.base = g(repo.cwd, "rev-parse", "HEAD");
   g(repo.cwd, "rm", "-q", "--cached", "old-sub"); g(repo.cwd, "commit", "-qm", "drop sub");
-  assert.deepEqual(await executor.branchSafety(repo), { ok: true, bad: [] });
+  assert.equal((await executor.branchSafety(repo)).ok, true);
 
   assert.equal((await executor.branchSafety(Object.assign({}, repo, { base: "undefined" }))).ok, false, "no valid fork point: refused");
   for (const p of [".git", "a/.git/config", "a/.GIT/hooks/x", ".git./x", "a/.git /y", ".g\u200cit/x", "git~1/x", "sub/.gitmodules", ".GitModules"]) assert.ok(executor.isGitPath(p), p);
@@ -135,7 +137,7 @@ test("branchSafety: refuses gitlinks (committed or only staged), .gitmodules and
 });
 
 test("a safe branch to a local-path origin is not pushed by default (protocol.file.allow=never)", async () => {
-  const repo = worktree();
+  const repo = await worktree();
   fs.writeFileSync(path.join(repo.cwd, "ok.js"), "1\n"); g(repo.cwd, "add", "ok.js"); g(repo.cwd, "commit", "-qm", "ok");
   const p = await executor.pushBranch(repo);
   assert.ok(!p.ok && /transport 'file' not allowed/.test(p.err), JSON.stringify(p));
