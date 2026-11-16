@@ -154,12 +154,26 @@ const wtCtx = (repo) => ({ cwd: repo.cwd, gitDir: repo.gitDir, workTree: repo.cw
 // A commit the bridge will not push or vouch for: it adds or changes a gitlink (mode 160000, a nested repository), a
 // .gitmodules file, or any path with a .git component, including the variants git itself treats as .git or .gitmodules:
 // case, trailing dots and spaces, HFS-ignorable characters, NTFS alternate data streams (".git::$INDEX_ALLOCATION"),
-// backslash separators and 8.3 short names (git~1, gitmod~1..4, gi7eba~1..9). Empty .git folders are listed with -t.
+// backslash separators and 8.3 short names. Empty .git folders are listed with -t.
+// 8.3 short names mirror git's own verify_path() checks in path.c:
+//  - .gitmodules: is_ntfs_dot_generic(name, "gitmodules", "gi7eba"): the regular short name (the first 6 characters, "~",
+//    1-4: gitmod~1..4) and the fall-back short name, 8 characters exactly: up to 6 leading characters of git's hash-based
+//    prefix "gi7eba", "~", a digit 1-9, then digits (gi7eba~1, gi7eb~12, gi7e~123, g~123456, ~1234567);
+//  - .git: is_ntfs_dotgit() accepts only git~1 (git keeps .git first in a folder); this check is wider on purpose: any
+//    leading part of "git" (including none), "~" and digits (git~1, git~12, gi~123, g~123456, ~1234567).
+// The component is compared after removing HFS-ignorable characters, case, an NTFS stream suffix and trailing dots and
+// spaces, which git's checks also skip.
 const IGNORABLE = /[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g;
+function isNtfsShortName(n, name, hashPrefix) {   // n: lower-case, no stream suffix, no trailing dots or spaces
+  if (n.length !== 8) return false;
+  if (n.slice(0, 6) === name.slice(0, 6) && n[6] === "~" && n[7] >= "1" && n[7] <= "4") return true;
+  const m = /^([^~]{0,6})~[1-9][0-9]*$/.exec(n);
+  return !!m && hashPrefix.startsWith(m[1]);
+}
 function isGitPath(p) {
   return String(p).split(/[\\/]/).some((c) => {
     const n = c.replace(IGNORABLE, "").toLowerCase().split(":")[0].replace(/[ .]+$/, "");
-    return n === ".git" || /^git~\d+$/.test(n) || n === ".gitmodules" || /^gitmod~[1-4]$/.test(n) || /^gi7eba~[1-9]$/.test(n);
+    return n === ".git" || /^(?:g|gi|git)?~[0-9]+$/.test(n) || n === ".gitmodules" || isNtfsShortName(n, "gitmodules", "gi7eba");
   });
 }
 function rawRecords(out) {   // `git diff-* -z --raw` output: ":<srcmode> <dstmode> <src> <dst> <status>\0<path>\0"

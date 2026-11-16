@@ -257,6 +257,20 @@ test("F4: path variants git treats as .git or .gitmodules (NTFS streams, backsla
   for (const p of ["a.git", ".github/x", ".gitignore", ".gitattributes", "x/git/y", "dotgit", "gitmodules.txt", "a:b/c"]) assert.ok(!executor.isGitPath(p), p);
 });
 
+test("R3-review: 8.3 short names with multi-digit suffixes for .git and .gitmodules are refused, mirroring git's path.c checks", () => {
+  // .gitmodules: git's is_ntfs_dot_generic(name, "gitmodules", "gi7eba"): the regular short name, and the fall-back short name
+  // (8 characters: up to 6 leading characters of "gi7eba", "~", a digit 1-9, then digits), with case, trailing dots and
+  // spaces and an NTFS stream suffix ignored.
+  const modules = ["gi7eb~12", "gi7e~123", "gi7~1234", "gi~12345", "g~123456", "~1234567", "GI7EB~12", "gi7eb~19", "gi7e~100", "g~900000",
+    "gi7eb~12.", "gi7e~123 ", "g~123456::$DATA", "a/gi7eb~12", "a\\gi7e~123\\b", "gi7eba~1", "gitmod~3", "gi7e‌b~12"];
+  // .git: wider than git's own is_ntfs_dotgit() (git~1 only): any leading part of "git", "~" and digits.
+  const dotgit = ["git~12", "git~123", "gi~1", "gi~123456", "g~1", "g~123456", "~1", "~1234567", "GIT~10", "Gi~22/config", "x\\g~12\\hooks", "gi~12 .", "g~1::$INDEX_ALLOCATION"];
+  for (const p of modules.concat(dotgit)) assert.ok(executor.isGitPath(p), p);
+  // Not short names of .git or .gitmodules (as in git: wrong hash prefix, ~0 first, 9 characters, ~5 for the regular form, other names).
+  for (const p of ["gi7ebb~1x", "gi7ec~12", "gx~12345", "gitmod~5", "gi7eba~0", "gi7eb~012", "gi7eb~123", "gitmodul~1", "a~12", "gitx~1", "g~", "git~", "~",
+    "g~1a", "gi250a~1", "gi7d29~1", "~$doc.docx", "notes~1.txt"]) assert.ok(!executor.isGitPath(p), p);
+});
+
 test("F4: an empty .git folder in a commit (only visible with diff-tree -t) is refused", async () => {
   const { origin } = source("r4d");
   const { last } = await exec("7400004", "r4d", async (bin, text, cwd) => {
