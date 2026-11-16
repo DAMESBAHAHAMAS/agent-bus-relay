@@ -291,6 +291,8 @@ async function defaultBranch(ctx) {
   return "";
 }
 async function prepareRepo(d, task, run, { beforeAdd = () => {} } = {}) {
+  // The write rules that keep the source repository's .git out of reach (execSettings) need the macOS sandbox.
+  if (process.platform !== "darwin") return { ok: false, reason: "a repository run needs the macOS sandbox (its write rules protect the source repository's git folder); this host is " + process.platform };
   const src = path.join(DEV_ROOT, d.repo);
   let sl; try { sl = fs.lstatSync(path.join(src, ".git")); } catch (e) {}
   if (!sl) return { ok: false, reason: "repo " + d.repo + " is not a git repository under ~/Developer" };
@@ -339,6 +341,11 @@ async function prepareRepo(d, task, run, { beforeAdd = () => {} } = {}) {
   } catch (e) { return fail("could not record the worktree (" + (e.code || e.message) + ")"); }
   const v = validateWorktree(repo);
   if (!v.ok) return fail(v.reason);
+  // The sandbox rules spell these paths exactly (execSettings), so each must be plain, and the rules must build.
+  for (const p of [repo.commonDir, path.join(repo.src, ".git"), repo.gitDir, repo.cwd, repo.objects, runRefFile(repo)])
+    if (!plainPath(p)) return fail("the path " + JSON.stringify(p).slice(0, 160) + " has a character the sandbox write rules cannot spell (printable ASCII only, without * ? [ ] \\ or \")");
+  try { execSettings(repo.cwd, repo); } catch (e) { return fail("could not build the sandbox write rules (" + String(e.message).slice(0, 120) + ")"); }
+  repo.gitNames = gitNames(repo);   // compared after the run (newGitNames)
   return Object.assign(repo, { ok: true });
 }
 // Runs that a crash, or a process that outlived its run, left in the repository are taken out before a new one starts:
@@ -412,6 +419,9 @@ async function branchSafety(repo) {
   if (!v.ok) return no("comes from a worktree that failed validation (" + v.why + ")");
   const dirty = objectsClean(repo);
   if (dirty) return no("comes from a run whose objects failed validation (" + dirty + ")");
+  const stray = newGitNames(repo);
+  if (stray.length) return no("comes from a run that created " + stray.slice(0, 3).map((p) => JSON.stringify(path.relative(repo.commonDir, p) || p)).join(", ") +
+    " in the source repository's git folder (a name the sandbox write rules cannot cover)");
   const sha = await runSha(repo);
   if (!sha) return no("does not resolve to a commit (the run branch must be a plain ref to a commit)");
   // Copy the run's new objects once, through index-pack (which names every object by the hash of its content), into the
@@ -584,19 +594,115 @@ function prompt(task, d, cid, repo) {
 // objects are read-only, reached as an alternate); and its own run branch ref, its lock and its reflog. Nothing else under the
 // repository's .git, and no other run's folder, is writable. The bridge moves the task branch itself after checking it.
 // Passed as a JSON string, so no settings file is written where the model could change it.
+//
+// The source repository's .git (revision 4). When its working directory is a linked worktree, the Claude Code CLI adds that
+// worktree's common git folder (~/Developer/<repo>/.git) to the sandbox's write roots by itself (2.1.319: all of it except
+// hooks, config, commondir and alternates), whatever allowWrite says. A write-deny entry wins over every write allow
+// ("denyWrite: takes precedence over allowWrite"), and there is no allow-within-deny for writes, so the .git folder cannot be
+// denied whole and then partly re-opened. Instead, in that folder (by its real path and by its ~/Developer spelling), every
+// name on the way to the run's own paths that is not on that way is denied, level by level: at each folder, every child name
+// other than the next part of an allowed path (denyOthers). That leaves writable only worktrees/<this run's git folder>/
+// (minus HEAD, refs, config and pointers, denied below), refs/heads/<run ref>, its .lock, and logs/refs/heads/<run ref>.
+// The task branch, every other ref, packed-refs, HEAD, config, the shared objects and other worktrees' folders are denied.
+// macOS only: the sandbox matches these rules case-insensitively and after Unicode case folding (ſ is s), so a spelling
+// variant of a denied name is denied too. A character set in a rule may hold printable ASCII only (a set with several
+// non-ASCII characters silently matched nothing in a check on this Mac), so a name that starts, after an allowed prefix,
+// with a non-ASCII character that folds to no ASCII letter, or with a control character, is not covered by a rule;
+// branchSafety() refuses any run that created such a name in these folders (newGitNames).
 const markers = () => {
   let root = WORK_ROOT; try { root = fs.realpathSync(WORK_ROOT); } catch (e) {}
   return [...new Set([MARKER, PIDS, path.join(root, ".running.json"), path.join(root, ".running-pids.json")])];
 };
+// The sandbox compares a path lower-cased with the rule's letters lower-cased, a set's range included: [L-j] means the
+// characters between "j" and "l" (checked on this Mac). So the sets below are built over lower-case input: a capital letter
+// never reaches a set, may sit inside a range as filler, and is never a range end or a member of its own.
+// A range end must also be a character the CLI's glob conversion never escapes and that is not special in a set; any other
+// character goes inside a range between such ends, as a single member, or (for - [ ] and ") in a rule of its own.
+const SET_END = /^[a-z0-9 !#%&',:;<=>@_`~*?]$/;
+const SET_SINGLE = (c) => c !== "-" && c !== "[" && c !== "]" && c !== '"';
+const PLAIN_NAME = /^[A-Za-z0-9._-]+$/;
+// A path the sandbox rules can spell exactly: printable ASCII only, with no glob, escape or quote character.
+const plainPath = (p) => typeof p === "string" && /^\/[\x20-\x7e]*$/.test(p) && !/[*?[\]\\"]/.test(p);
+// Rules that deny every child name of dir except the names given (each a plain name; compared case-insensitively, as the
+// sandbox does): for every prefix p of an allowed name, the names p<c>... whose next character c continues no allowed name
+// (a glob with a printable-ASCII character set), and the name p itself when p is a proper prefix and not allowed.
+function charRules(base, next) {
+  const excl = new Set([...next].map((c) => c.toLowerCase()));
+  const inc = [];
+  for (let c = 0x20; c <= 0x7e; c++) { const ch = String.fromCharCode(c); if (ch !== "/" && !excl.has(ch)) inc.push(ch); }
+  const runs = [];
+  for (const ch of inc) { const r = runs[runs.length - 1]; if (r && ch.charCodeAt(0) === r[r.length - 1].charCodeAt(0) + 1) r.push(ch); else runs.push([ch]); }
+  let members = "";
+  const alone = [];
+  const one = (c) => { if (/[A-Z]/.test(c)) return; if (SET_SINGLE(c)) members += c; else alone.push(c); };
+  for (const r of runs) {
+    const i = r.findIndex((c) => SET_END.test(c));
+    if (i < 0) { r.forEach(one); continue; }
+    let j = r.length - 1; while (!SET_END.test(r[j])) j--;
+    r.slice(0, i).forEach(one);
+    members += i === j ? r[i] : r[i] + "-" + r[j];
+    r.slice(j + 1).forEach(one);
+  }
+  return (members ? [base + "[" + members + "]*"] : []).concat(alone.map((c) => base + c + "*"));
+}
+function denyOthers(dir, names) {
+  const low = [...new Set(names.map((n) => String(n).toLowerCase()))];
+  if (!low.length || !low.every((n) => PLAIN_NAME.test(n)) || !plainPath(dir)) throw new Error("execSettings: not a plain path or name under " + dir);
+  const prefixes = new Set([""]);
+  for (const n of low) for (let i = 1; i <= n.length; i++) prefixes.add(n.slice(0, i));
+  const out = [];
+  for (const p of prefixes) {
+    if (p && !low.includes(p)) out.push(dir + "/" + p);
+    out.push(...charRules(dir + "/" + p, low.filter((n) => n.length > p.length && n.startsWith(p)).map((n) => n[p.length])));
+  }
+  return out;
+}
+// The run's own paths inside the source repository's .git, relative to it, as a tree: worktrees/<git folder> (a folder whose
+// contents are allowed, except what execSettings denies), refs/heads/<run ref> and its .lock, and logs/refs/heads/<run ref>.
+function gitAllowTree(repo) {
+  const tree = {};
+  const add = (parts) => { let t = tree; for (const x of parts) t = t[x] = t[x] || {}; };
+  const ref = repo.runRef.split("/"), last = ref.pop();
+  add(["worktrees", path.basename(repo.gitDir)]);
+  add(["refs", "heads", ...ref, last]); add(["refs", "heads", ...ref, last + ".lock"]);
+  add(["logs", "refs", "heads", ...ref, last]);
+  return tree;
+}
+function gitDenyRules(root, tree) {
+  const out = denyOthers(root, Object.keys(tree));
+  for (const [k, sub] of Object.entries(tree)) if (Object.keys(sub).length) out.push(...gitDenyRules(root + "/" + k, sub));
+  return out;
+}
+// The folders on the way to the run's own paths: the only places where the rules above leave a name uncovered.
+function gitWayDirs(repo) {
+  const dirs = [];
+  const walk = (dir, tree) => { dirs.push(dir); for (const [k, sub] of Object.entries(tree)) if (Object.keys(sub).length) walk(path.join(dir, k), sub); };
+  walk(repo.commonDir, gitAllowTree(repo));
+  return dirs;
+}
+// Every name in those folders, for branchSafety() to compare with after the run.
+function gitNames(repo) {
+  const names = new Set();
+  for (const d of gitWayDirs(repo)) { let list = []; try { list = fs.readdirSync(d); } catch (e) {} for (const n of list) names.add(path.join(d, n)); }
+  return names;
+}
+// Names created during the run in those folders that the sandbox rules could not cover (any character outside printable ASCII).
+function newGitNames(repo) {
+  if (!repo.gitNames) return ["(no record of the source repository's git folder from before the run)"];
+  return [...gitNames(repo)].filter((p) => !repo.gitNames.has(p) && /[^\x20-\x7e]/.test(path.basename(p)));
+}
 function execSettings(cwd, repo) {
   const s = JSON.parse(fs.readFileSync(SETTINGS, "utf8"));
   let files, fsRules;
   if (repo && repo.gitDir && repo.commonDir && repo.runRef && repo.objects && repo.cwd) {
     const ref = path.join(repo.commonDir, "refs", "heads", ...repo.runRef.split("/"));
+    if (path.dirname(repo.gitDir) !== path.join(repo.commonDir, "worktrees")) throw new Error("execSettings: the worktree's git folder is not under the source repository's worktrees");
+    const tree = gitAllowTree(repo);
+    const roots = [...new Set([repo.commonDir, repo.src ? path.join(repo.src, ".git") : repo.commonDir])];
     files = repo.cwd;
     fsRules = { allowWrite: [repo.cwd, repo.gitDir, repo.objects, ref, ref + ".lock", path.join(repo.commonDir, "logs", "refs", "heads", ...repo.runRef.split("/"))],
       denyWrite: [path.join(repo.cwd, ".git"), ...markers(), ...["HEAD", "refs", "config", "commondir", "gitdir", "config.worktree", "hooks"].map((f) => path.join(repo.gitDir, f)),
-        path.join(repo.commonDir, "config"), path.join(repo.commonDir, "hooks")] };
+        path.join(repo.commonDir, "config"), path.join(repo.commonDir, "hooks"), ...roots.flatMap((r) => gitDenyRules(r, tree))] };
   } else {
     files = path.resolve(cwd);
     fsRules = { allowWrite: [files], denyWrite: [path.join(files, ".git"), ...markers()] };
@@ -828,5 +934,5 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
   }
 }
 
-module.exports = { delegation, execute, recoverInterrupted, maskIds, prompt, checkTask, runClaude, updateTask, splitReport, summarize, prepareRepo, verify, execArgs, execSettings, EXEC_TOOLS, SETTINGS,
+module.exports = { delegation, execute, denyOthers, gitAllowTree, gitWayDirs, newGitNames, recoverInterrupted, maskIds, prompt, checkTask, runClaude, updateTask, splitReport, summarize, prepareRepo, verify, execArgs, execSettings, EXEC_TOOLS, SETTINGS,
   git, gitEnv, GIT_HARDEN, branchSafety, commitsSafety, validateWorktree, detachRun, readPlain, isGitPath, pushBranch, newRun, transportConfig, killRecorded, GIT_BIN, MARKER, PIDS };
