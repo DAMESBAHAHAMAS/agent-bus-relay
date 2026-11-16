@@ -402,6 +402,55 @@ test("R3-review: a run whose loose object content does not match its name is ref
   assert.equal(remoteBranches(origin), "");
 });
 
+test("R3-review: a checked branch whose push fails ends BLOCKED, the task branch does not move and Zoho is not written", async () => {
+  const { live } = source("q7");
+  g(live, "config", "remote.origin.url", path.join(TMP, "no-such-origin.git"));
+  const { last, updates } = await exec("7500009", "q7", async (bin, text, cwd) => { commit(cwd, "ok.js", "1\n"); return { ok: true, text: "done\nSTATUS: COMPLETE" }; });
+  assert.match(last, /STATUS: BLOCKED: the bridge checked the branch but could not push it/);
+  assert.equal(updates.length, 0);
+  assert.equal(g(live, "for-each-ref", "refs/heads/chatgpt/"), "", "the local task branch was not created");
+});
+
+test("R3-review: the marker names the run's repository, run ref and git folder before git worktree add, and again after it", async () => {
+  source("q8");
+  const seen = [];
+  const run = executor.newRun("7500010");
+  const repo = await executor.prepareRepo({ repo: "q8", task_id: "7500010" }, { name: "x" }, run,
+    { beforeAdd: (r) => seen.push({ runRef: r.runRef, gitDir: r.gitDir, exists: fs.existsSync(r.cwd) }) });
+  assert.ok(repo.ok, repo.reason);
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0].exists, false, "first call before the worktree exists");
+  assert.equal(seen[0].runRef, repo.runRef);
+  assert.equal(seen[1].gitDir, repo.gitDir, "second call with the git folder git made");
+});
+
+test("R3-review: processes a run left are killed even when started by a process that was already reparented, and after a bridge restart", async () => {
+  const late = path.join(TMP, "late-grandchild.txt"), fake = path.join(BIN, "fake-claude-2.js");
+  const B = "setTimeout(() => require('fs').writeFileSync(" + JSON.stringify(late).replace(/"/g, "'") + ", 'late'), 3000)";
+  const A = "setTimeout(() => require('child_process').spawn(process.execPath, ['-e', " + JSON.stringify(B) + "], { detached: true, stdio: 'ignore' }).unref(), 1000); setTimeout(() => {}, 4000)";
+  const T = "require('child_process').spawn(process.execPath, ['-e', " + JSON.stringify(A) + "], { detached: true, stdio: 'ignore' }).unref(); setTimeout(() => {}, 500)";
+  fs.writeFileSync(fake, "#!" + process.execPath + "\nrequire('child_process').spawn(process.execPath, ['-e', " + JSON.stringify(T) + "], { stdio: 'ignore' });\n" +
+    "setTimeout(() => console.log(JSON.stringify({ result: 'ok', subtype: 'success' })), 2000);\n", { mode: 0o755 });
+  const r = await executor.runClaude(fake, "P", executor.newRun("7500011").dir, process.env, null, { sampleMs: 200 });
+  assert.equal(r.reaped, true);
+  await new Promise((res) => setTimeout(res, 3500));
+  assert.ok(!fs.existsSync(late), "a grandchild started by a reparented process outlived the run");
+  // after a restart: the recorded processes in .running-pids.json are killed by recoverInterrupted
+  const { spawn } = require("node:child_process");
+  const orphan = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { detached: true, stdio: "ignore" }); orphan.unref();
+  await new Promise((res) => setTimeout(res, 300));
+  const row = execFileSync("/bin/ps", ["-o", "pgid=", "-o", "lstart=", "-p", String(orphan.pid)], { encoding: "utf8" }).trim().match(/^(\d+)\s+(.+)$/);
+  fs.writeFileSync(executor.PIDS, JSON.stringify([{ pid: orphan.pid, start: row[2], pgid: Number(row[1]) }]));
+  fs.writeFileSync(executor.MARKER, JSON.stringify({ cid: "c-restart", task_id: "7500011", at: "t" }));
+  const notices = [];
+  await executor.recoverInterrupted(async (cid, type, text) => notices.push(cid));
+  await new Promise((res) => setTimeout(res, 300));
+  let alive = true; try { process.kill(orphan.pid, 0); } catch (e) { alive = false; }
+  assert.equal(alive, false, "the recorded process survived the restart recovery");
+  assert.deepEqual(notices, ["c-restart"]);
+  assert.ok(!fs.existsSync(executor.PIDS));
+});
+
 // ---------- F2/F5 and R6: every bridge git call, as the logging wrapper saw it (runs last: it reads the whole log) ----------
 const REQUIRED = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "core.sshCommand=ssh", "core.askPass=", "core.pager=cat", "diff.external=",
   "filter.lfs.process=", "protocol.allow=never", "protocol.ext.allow=never", "submodule.recurse=false", "core.attributesFile=/dev/null",

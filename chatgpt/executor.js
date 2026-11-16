@@ -25,6 +25,8 @@ const DEV_ROOT = process.env.BUS_DEV_ROOT || path.join(os.homedir(), "Developer"
 // A run that a bridge restart cuts short must not look "in progress" forever: the marker names the run in flight,
 // and the bridge reports it as interrupted when it starts again. No run may write it (see execSettings).
 const MARKER = path.join(WORK_ROOT, ".running.json");
+// The processes the current run started (pid, process group, start time), so a bridge restart can still stop them.
+const PIDS = path.join(WORK_ROOT, ".running-pids.json");
 const EXEC_TIMEOUT_S = Number(process.env.BUS_EXEC_TIMEOUT_S || "1800");
 const PYTHON = process.env.BUS_TASK_PYTHON || "/opt/anaconda3/bin/python3";
 // The on/off switch is a file, read on every request: removing it stops delegation at once, with no restart.
@@ -281,7 +283,7 @@ async function prepareRepo(d, task, run, { beforeAdd = () => {} } = {}) {
   if (sl.isSymbolicLink() || !sl.isDirectory()) return { ok: false, reason: "repo " + d.repo + " is not a primary checkout (its .git must be a folder)" };
   if (!run || !run.dir) return { ok: false, reason: "no run folder" };
   const commonDir = fs.realpathSync(path.join(src, ".git"));
-  const repo = { src, commonDir, runDir: run.dir, runId: run.id, objects: path.join(run.dir, "objects"), quarantine: path.join(run.root || path.dirname(path.dirname(run.dir)), ".quarantine", run.id) };
+  const repo = { src, commonDir, runDir: run.dir, runId: run.id, objects: path.join(run.dir, "objects"), quarantine: path.join(run.root || path.dirname(path.dirname(run.dir)), ".quarantine", run.id, "objects") };
   const sctx = srcCtx(repo);
   repo.url = (await git(["config", "--get", "remote.origin.url"], sctx)).out;   // from the source repository's own config
   let def = await defaultBranch(sctx);
@@ -314,6 +316,7 @@ async function prepareRepo(d, task, run, { beforeAdd = () => {} } = {}) {
   try {   // recorded now, before the model runs; validateWorktree compares against it later
     const line = fs.readFileSync(path.join(repo.cwd, ".git"), "utf8").match(/^gitdir: ([^\n]+)\n?$/);
     repo.gitDir = line ? fs.realpathSync(path.resolve(repo.cwd, line[1])) : "";
+    beforeAdd(repo);   // again, with the git folder git actually made (git may change the name)
     for (const sub of ["pack", "info"]) fs.mkdirSync(path.join(repo.objects, sub), { recursive: true, mode: 0o700 });
     const reflog = path.join(commonDir, "logs", "refs", "heads", ...repo.runRef.split("/"));
     fs.mkdirSync(path.dirname(reflog), { recursive: true });
@@ -354,6 +357,24 @@ async function runSha(repo) {
   sha = (String(readPlain(runRefFile(repo), 64)).match(/^([0-9a-f]{40})\n?$/) || [])[1] || "";
   return sha;
 }
+function snapshotLoose(from, to) {
+  try {
+    fs.mkdirSync(to, { recursive: true, mode: 0o700 });
+    let n = 0;
+    for (const d of fs.readdirSync(from, { withFileTypes: true })) {
+      if (!/^[0-9a-f]{2}$/.test(d.name) || !d.isDirectory()) continue;
+      for (const f of fs.readdirSync(path.join(from, d.name), { withFileTypes: true })) {
+        if (!/^[0-9a-f]{38}$/.test(f.name) || !f.isFile()) continue;
+        const body = readPlain(path.join(from, d.name, f.name), 256 * 1024 * 1024, true);
+        if (body === null) continue;
+        fs.mkdirSync(path.join(to, d.name), { recursive: true, mode: 0o700 });
+        fs.writeFileSync(path.join(to, d.name, f.name), body, { mode: 0o400, flag: "wx" });
+        if (++n > 200000) return null;
+      }
+    }
+    return n;
+  } catch (e) { return null; }
+}
 // The run's own object folder may hold loose objects only: no alternates, commit-graph, multi-pack-index or packs (which
 // the bridge's git would otherwise read), and no symlinks.
 function objectsClean(repo) {
@@ -382,8 +403,13 @@ async function branchSafety(repo) {
   // bridge's own quarantine folder; everything below reads only those copies and the repository.
   if (sha !== repo.base) {
     fs.mkdirSync(path.join(repo.quarantine, "pack"), { recursive: true, mode: 0o700 });
-    const q = await packPipe(gitEnv({ cwd: repo.src, gitDir: repo.commonDir, alternates: repo.objects }),
-      gitEnv({ cwd: repo.src, gitDir: repo.commonDir, objectDir: repo.quarantine, alternates: path.join(repo.commonDir, "objects") }), sha + "\n^" + repo.base + "\n", false);
+    // First a bridge-owned snapshot of the regular loose object files only (never through a symlink, never a FIFO), so a
+    // leftover process changing the model's folder afterwards changes nothing the bridge reads.
+    const snap = path.join(path.dirname(repo.quarantine), "loose");
+    const copied = snapshotLoose(repo.objects, snap);
+    if (copied === null) return no("comes from a run whose objects could not be copied", { sha });
+    const q = await packPipe(gitEnv({ cwd: repo.src, gitDir: repo.commonDir, alternates: snap }),
+      gitEnv({ cwd: repo.src, gitDir: repo.commonDir, objectDir: repo.quarantine, alternates: path.join(repo.commonDir, "objects") }), sha + "\n^" + repo.base + "\n", false, true);
     if (!q.ok) return no("has objects that could not be copied for checking (" + q.err.slice(0, 120) + ")", { sha });
   }
   const isCommit = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", sha + "^{commit}"], srcCtx(repo, true));
@@ -399,11 +425,11 @@ async function branchSafety(repo) {
 }
 // pack-objects (reading with readEnv) piped into index-pack --stdin (writing with writeEnv). index-pack computes every
 // object's name from its content, so what it writes is exactly what the names say; --strict adds fsck checks and connectivity.
-function packPipe(readEnv, writeEnv, revs, strict) {
+function packPipe(readEnv, writeEnv, revs, strict, fresh = false) {
   return new Promise((resolve) => {
     let err = "", codes = {}, settled = false;
     const end = (ok) => { if (!settled) { settled = true; clearTimeout(timer); resolve({ ok, err: err.trim().slice(0, 300) }); } };
-    const pack = spawn(GIT_BIN, GIT_HARDEN.concat(["pack-objects", "--revs", "--stdout", "--quiet", "--no-reuse-delta", "--no-reuse-object"]), { cwd: readEnv.GIT_DIR, env: readEnv });
+    const pack = spawn(GIT_BIN, GIT_HARDEN.concat(["pack-objects", "--revs", "--stdout", "--quiet"], fresh ? ["--no-reuse-delta", "--no-reuse-object"] : []), { cwd: readEnv.GIT_DIR, env: readEnv });
     const idx = spawn(GIT_BIN, GIT_HARDEN.concat(["index-pack", "--stdin"].concat(strict ? ["--strict"] : [])), { cwd: writeEnv.GIT_DIR, env: writeEnv });
     const timer = setTimeout(() => { pack.kill(); idx.kill(); end(false); }, 120000);
     for (const c of [pack, idx]) { c.stderr.on("data", (b) => { err += b; }); c.on("error", () => end(false)); c.stdin.on("error", () => {}); }
@@ -451,8 +477,9 @@ async function detachRun(repo) {
     try { fs.rmSync(f, { recursive: true, force: true }); } catch (e) { ok = false; }
   }
   if (!del.ok && fs.existsSync(refFile)) ok = false;
-  if (repo.quarantine && path.basename(path.dirname(repo.quarantine)) === ".quarantine") {   // the bridge's checked copies, kept as evidence
-    try { fs.renameSync(repo.quarantine, path.join(repo.runDir, "quarantine")); } catch (e) {}
+  const qdir = repo.quarantine ? path.dirname(repo.quarantine) : "";
+  if (qdir && path.basename(path.dirname(qdir)) === ".quarantine" && path.basename(qdir) === path.basename(repo.runDir)) {   // the bridge's checked copies, kept as evidence
+    try { fs.renameSync(qdir, path.join(repo.runDir, "quarantine")); } catch (e) {}
   }
   if (repo.gitDir && path.dirname(repo.gitDir) === path.join(repo.commonDir, "worktrees")) {
     const dest = path.join(repo.runDir, "worktree-git");
@@ -542,7 +569,10 @@ function prompt(task, d, cid, repo) {
 // objects are read-only, reached as an alternate); and its own run branch ref, its lock and its reflog. Nothing else under the
 // repository's .git, and no other run's folder, is writable. The bridge moves the task branch itself after checking it.
 // Passed as a JSON string, so no settings file is written where the model could change it.
-const markers = () => { let r = MARKER; try { r = path.join(fs.realpathSync(WORK_ROOT), ".running.json"); } catch (e) {} return [...new Set([MARKER, r])]; };
+const markers = () => {
+  let root = WORK_ROOT; try { root = fs.realpathSync(WORK_ROOT); } catch (e) {}
+  return [...new Set([MARKER, PIDS, path.join(root, ".running.json"), path.join(root, ".running-pids.json")])];
+};
 function execSettings(cwd, repo) {
   const s = JSON.parse(fs.readFileSync(SETTINGS, "utf8"));
   let files, fsRules;
@@ -583,49 +613,61 @@ function psTable() {
     (err, out) => resolve(String(out || "").split("\n").map((l) => l.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/)).filter(Boolean)
       .map((m) => ({ pid: +m[1], ppid: +m[2], pgid: +m[3], start: m[4] })))));
 }
-function treeWatcher(rootPid, everyMs = 1000) {
+async function psTableRetry() {
+  for (let i = 0; i < 3; i++) { const t = await psTable(); if (t.length) return t; await new Promise((r) => setTimeout(r, 300)); }
+  return [];
+}
+// Kill every recorded process that is still the same process (pid and start time), and every recorded process group
+// (other than the bridge's own) that still has a recorded member alive. Returns false if ps could not be read.
+async function killRecorded(seen) {
+  const t = await psTableRetry();
+  if (!t.length) return false;
+  const now = new Map(t.map((p) => [p.pid, p]));
+  const own = now.get(process.pid), ownGroup = own ? own.pgid : -1;
+  const groups = new Set();
+  for (const [pid, r] of seen) {
+    const cur = now.get(pid);
+    if (!cur || cur.start !== r.start) continue;   // gone, or the pid now names another process
+    if (cur.pgid !== ownGroup && cur.pgid > 1) groups.add(cur.pgid);
+    try { process.kill(pid, "SIGKILL"); } catch (e) {}
+  }
+  for (const g of groups) try { process.kill(-g, "SIGKILL"); } catch (e) {}
+  return true;
+}
+function treeWatcher(rootPid, everyMs = 1000, onNew = () => {}) {
   const seen = new Map();   // pid -> { start, pgid }
   let stopped = false;
   const sample = async () => {
-    const t = await psTable(), kids = new Map();
+    const t = await psTable(), kids = new Map(), byPid = new Map(t.map((p) => [p.pid, p]));
     for (const p of t) { if (!kids.has(p.ppid)) kids.set(p.ppid, []); kids.get(p.ppid).push(p); }
-    const queue = [rootPid];
-    while (queue.length) for (const c of kids.get(queue.shift()) || []) { if (!seen.has(c.pid)) seen.set(c.pid, { start: c.start, pgid: c.pgid }); queue.push(c.pid); }
+    if (stopped) return;
+    // from the CLI, and from every recorded process still alive (one reparented to launchd keeps its children recorded)
+    const queue = [rootPid, ...[...seen].filter(([pid, r]) => byPid.has(pid) && byPid.get(pid).start === r.start).map(([pid]) => pid)];
+    let grew = false;
+    while (queue.length) for (const c of kids.get(queue.shift()) || []) { if (!seen.has(c.pid)) { seen.set(c.pid, { start: c.start, pgid: c.pgid }); grew = true; queue.push(c.pid); } }
+    if (grew) onNew(seen);
   };
   const loop = async () => { while (!stopped) { await sample(); await new Promise((r) => setTimeout(r, everyMs).unref()); } };
   loop();
-  return {
-    sample,
-    async killAll() {
-      stopped = true;
-      const own = (await psTable()).find((p) => p.pid === process.pid);
-      const ownGroup = own ? own.pgid : -1;
-      const now = new Map((await psTable()).map((p) => [p.pid, p]));
-      for (const [pid, r] of seen) {
-        const cur = now.get(pid);
-        if (!cur || cur.start !== r.start) continue;   // gone, or the pid now names another process
-        if (cur.pgid === pid && pid !== ownGroup) try { process.kill(-pid, "SIGKILL"); } catch (e) {}
-        try { process.kill(pid, "SIGKILL"); } catch (e) {}
-      }
-      return seen.size;
-    },
-  };
+  return { seen, stop() { stopped = true; }, async killAll() { stopped = true; return killRecorded(seen); } };
 }
+const savePids = (seen) => { try { fs.writeFileSync(PIDS, JSON.stringify([...seen].map(([pid, r]) => ({ pid, start: r.start, pgid: r.pgid })))); } catch (e) {} };
 function runClaude(claudeBin, text, cwd, env, repo, { timeoutMs = EXEC_TIMEOUT_S * 1000, sampleMs = 1000 } = {}) {
   return new Promise((resolve) => {
     let out = "", size = 0, timedOut = false, done = false;
     const child = spawn(claudeBin, execArgs(text, { cwd, repo }), { cwd, env, stdio: ["ignore", "pipe", "ignore"] });
-    const watch = child.pid ? treeWatcher(child.pid, sampleMs) : null;
+    const watch = child.pid ? treeWatcher(child.pid, sampleMs, savePids) : null;
     const timer = setTimeout(() => { timedOut = true; try { child.kill("SIGKILL"); } catch (e) {} }, timeoutMs);
     child.stdout.on("data", (b) => { size += b.length; if (size <= 32 * 1024 * 1024) out += b; else try { child.kill("SIGKILL"); } catch (e) {} });
     const finish = async () => {
       if (done) return; done = true; clearTimeout(timer);
-      if (watch) await watch.killAll();
-      try { const j = JSON.parse(out.slice(out.indexOf("{"))); resolve({ ok: !j.is_error && typeof j.result === "string", text: j.result || "", status: j.subtype || "ok" }); }
-      catch (e) { resolve({ ok: false, text: "", status: timedOut ? "timed_out" : "run_failed" }); }
+      const reaped = watch ? await watch.killAll() : true;
+      if (reaped) try { fs.unlinkSync(PIDS); } catch (e) {}
+      try { const j = JSON.parse(out.slice(out.indexOf("{"))); resolve({ ok: !j.is_error && typeof j.result === "string", text: j.result || "", status: j.subtype || "ok", reaped }); }
+      catch (e) { resolve({ ok: false, text: "", status: timedOut ? "timed_out" : "run_failed", reaped }); }
     };
     child.on("error", finish);
-    child.on("exit", () => { setTimeout(() => { child.stdout.destroy(); finish(); }, 5000).unref(); });   // a pipe held open by an escaped process does not stall the bridge
+    child.on("exit", () => { if (watch) watch.stop(); setTimeout(() => { child.stdout.destroy(); finish(); }, 5000).unref(); });   // no sampling once the CLI pid can be reused; a pipe held open by an escaped process does not stall the bridge
     child.on("close", finish);
   });
 }
@@ -669,6 +711,11 @@ async function recoverInterrupted(postFor) {
     known = !!r && typeof r === "object" && typeof r.src === "string" && typeof r.commonDir === "string" && typeof r.runDir === "string" &&
       fs.realpathSync(path.join(r.src, ".git")) === r.commonDir && r.commonDir.startsWith(fs.realpathSync(DEV_ROOT) + path.sep) &&
       r.runDir.startsWith(fs.realpathSync(WORK_ROOT) + path.sep) && (!r.gitDir || path.dirname(r.gitDir) === path.join(r.commonDir, "worktrees"));
+  } catch (e) {}
+  try {   // processes the interrupted run left behind
+    const list = JSON.parse(fs.readFileSync(PIDS, "utf8"));
+    if (Array.isArray(list)) await killRecorded(new Map(list.filter((x) => x && Number.isInteger(x.pid) && x.pid > 1 && typeof x.start === "string").map((x) => [x.pid, { start: x.start, pgid: x.pgid }])));
+    fs.unlinkSync(PIDS);
   } catch (e) {}
   if (known) await detachRun(r).catch(() => {});
   await postFor(m.cid, "result", maskIds("This notice is from the Mac bridge, not from Claude Code. The run for task " + m.task_id + " (started " + m.at +
@@ -721,12 +768,18 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
     await post("ack", "STATUS: STARTED " + cid + " on task " + d.task_id + " (" + task.name + ")" + (repo ? " in " + d.repo + " on branch " + repo.branch : "") + ". The result will follow on this correlation id.");
     log("delegated task", d.task_id, "started for", cid, "in", cwd);
     const r = await run(claudeBin, prompt(task, d, cid, repo), cwd, runEnv, repo);
+    // Processes the run left that the bridge could not confirm stopped: nothing is checked, pushed or written.
+    if (r.reaped === false) return post("result", "STATUS: BLOCKED: the bridge could not confirm that the run's processes had stopped (ps unavailable), so it did not check, push or list the run's work. Nothing was written to Zoho.");
     const safety = repo ? await branchSafety(repo) : null;
-    if (repo && safety.ok) { const p = await pushBranch(repo, safety); if (!p.ok) log("delegated task", d.task_id, "push failed:", p.err.slice(0, 200)); }
+    let pushFail = null;
+    if (repo && safety.ok) { const p = await pushBranch(repo, safety); if (!p.ok) { pushFail = p.err; log("delegated task", d.task_id, "push failed:", p.err.slice(0, 200)); } }
     const evidence = await verify(cwd, repo, safety).catch((e) => "BRIDGE-VERIFIED EVIDENCE: the check failed (" + String(e.message || e).slice(0, 80) + ").");
     log("delegated task", d.task_id, "evidence:", evidence.replace(/\n/g, " | ").slice(0, 300));
     // A refused branch ends the run here: not pushed, nothing written to Zoho, and BLOCKED whatever the model reported.
     if (safety && !safety.ok) return post("result", (evidence + "\n\nZoho: not updated (the branch was refused).\n\nSTATUS: BLOCKED: the bridge refused the branch: it " + safety.reason + ". Nothing was pushed.").slice(-3500));
+    // A checked branch that did not reach origin is not on any branch yet: BLOCKED, with the commits kept in the run folder.
+    if (pushFail !== null) return post("result", (evidence + "\n\nZoho: not updated (the push failed).\n\nSTATUS: BLOCKED: the bridge checked the branch but could not push it (" + String(pushFail).slice(0, 160) +
+      "). The task branch was not moved; the commits are kept in the run folder (quarantine and run-branch.txt). Retry with a new idempotency_key.").slice(-3500));
     if (!r.ok) return post("result", (evidence + "\n\nSTATUS: BLOCKED: the run ended without a report (" + r.status + "). Nothing is claimed as done.").slice(-3500));
     const { report, update: proposed } = splitReport(r.text);
     let written = proposed;
@@ -746,4 +799,4 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
 }
 
 module.exports = { delegation, execute, recoverInterrupted, maskIds, prompt, checkTask, runClaude, updateTask, splitReport, summarize, prepareRepo, verify, execArgs, execSettings, EXEC_TOOLS, SETTINGS,
-  git, gitEnv, GIT_HARDEN, branchSafety, commitsSafety, validateWorktree, detachRun, readPlain, isGitPath, pushBranch, newRun, transportConfig, GIT_BIN, MARKER };
+  git, gitEnv, GIT_HARDEN, branchSafety, commitsSafety, validateWorktree, detachRun, readPlain, isGitPath, pushBranch, newRun, transportConfig, GIT_BIN, MARKER, PIDS };
