@@ -195,12 +195,13 @@ test("F3: a repository run cannot write HEAD, refs, config, pointers, shared obj
   let cap;
   await exec("7300002", "r3b", async (bin, text, cwd, runEnv, repo) => {
     const argv = executor.execArgs(text, { cwd, repo });
-    cap = { cwd, head: g(cwd, "symbolic-ref", "HEAD"), s: JSON.parse(argv[argv.indexOf("--settings") + 1]) };
+    cap = { cwd, head: g(cwd, "symbolic-ref", "HEAD"), s: JSON.parse(argv[argv.indexOf("--settings") + 1]),
+      gitDir: fs.realpathSync(path.resolve(cwd, fs.readFileSync(path.join(cwd, ".git"), "utf8").replace(/^gitdir: /, "").trim())) };
     commit(cwd, "ok.js", "1\n");
     return { ok: true, text: "done\nSTATUS: COMPLETE" };
   }, "Branch Owner");
   const commonDir = fs.realpathSync(path.join(live, ".git"));
-  const gitDir = fs.realpathSync(path.resolve(cap.cwd, fs.readFileSync(path.join(cap.cwd, ".git"), "utf8").replace(/^gitdir: /, "").trim()));
+  const gitDir = cap.gitDir;
   const f = cap.s.sandbox.filesystem, taskBranch = "refs/heads/chatgpt/7300002-branch-owner";
   assert.notEqual(cap.head, taskBranch, "the model's HEAD is not the task branch the bridge pushes");
   const ownRef = path.join(commonDir, cap.head);
@@ -280,9 +281,78 @@ test("F4: a run cannot retarget a later push to another task's branch through th
   assert.match(first.last, /STATUS: BLOCKED/);
 });
 
+// ---------- Findings from the code review of revision 3 itself (pre-commit). These guard rev 3's own design; they are not
+// F1-F5 regressions and some of them pass on f68ed31 too. ----------
+test("R3-review: after every run the live repository holds no run branch, no run worktree and no object it cannot find (fsck and repack pass)", async () => {
+  const { live } = source("q1");
+  await exec("7500001", "q1", async (bin, text, cwd, runEnv) => {   // the model's git with the bridge's environment: objects in the run folder
+    const mg = (...a) => execFileSync(REAL_GIT, a, { cwd, encoding: "utf8", env: Object.assign({}, runEnv, ID_ENV) });
+    fs.writeFileSync(path.join(cwd, "ok.js"), "1\n"); mg("add", "ok.js"); mg("commit", "-qm", "ok");
+    fs.writeFileSync(path.join(cwd, "staged.js"), "2\n"); mg("add", "staged.js");   // staged, never committed
+    return { ok: true, text: "done\nSTATUS: COMPLETE" };
+  });
+  const refused = await exec("7500001", "q1", async (bin, text, cwd, runEnv) => {
+    const mg = (...a) => execFileSync(REAL_GIT, a, { cwd, encoding: "utf8", env: Object.assign({}, runEnv, ID_ENV) });
+    mg("update-index", "--add", "--cacheinfo", "160000," + mg("rev-parse", "HEAD").trim() + ",sub"); mg("commit", "-qm", "gitlink");
+    return { ok: true, text: "done\nSTATUS: COMPLETE" };
+  });
+  assert.match(refused.last, /STATUS: BLOCKED/);
+  assert.equal(g(live, "for-each-ref", "refs/heads/chatgpt-run/"), "", "no run branch left");
+  assert.equal(g(live, "worktree", "list", "--porcelain").split("\n").filter((l) => l.startsWith("worktree ")).length, 1, "no run worktree registered");
+  g(live, "fsck", "--no-dangling", "--no-progress");
+  g(live, "repack", "-a", "-d", "-q");
+  const runs = fs.readdirSync(path.join(EXEC, "7500001"));
+  assert.equal(runs.length, 2);
+  for (const r of runs) for (const f of ["run-branch.txt", "worktree-git", "q1", "objects"]) assert.ok(fs.existsSync(path.join(EXEC, "7500001", r, f)), "kept as evidence: " + f);
+});
+
+test("R3-review: a symbolic task branch is refused and never followed (the live main does not move)", async () => {
+  const { live, origin } = source("q2");
+  const main = g(live, "rev-parse", "main");
+  g(live, "symbolic-ref", "refs/heads/chatgpt/7500002-x", "refs/heads/main");   // as a rev 2 run could leave it
+  let ran2 = false;
+  const { last } = await exec("7500002", "q2", async (bin, text, cwd) => { ran2 = true; commit(cwd, "ok.js", "1\n"); return { ok: true, text: "done\nSTATUS: COMPLETE" }; });
+  assert.equal(ran2, false);
+  assert.match(last, /STATUS: BLOCKED: the task branch .* is a symbolic ref/);
+  assert.equal(g(live, "rev-parse", "main"), main);
+  assert.equal(remoteBranches(origin), "");
+});
+
+test("R3-review: a run branch that is a symbolic ref, rewinds the task branch, or comes with a planted object alternate is refused", async () => {
+  const { live, origin } = source("q3");
+  await exec("7500003", "q3", async (bin, text, cwd) => { commit(cwd, "a.js", "1\n"); return { ok: true, text: "done\nSTATUS: COMPLETE" }; });
+  const pushed = g(origin, "rev-parse", "refs/heads/chatgpt/7500003-x"), main = g(live, "rev-parse", "main");
+  const cases = [
+    ["symbolic run branch", (cwd) => { const ref = g(cwd, "symbolic-ref", "HEAD"); fs.writeFileSync(path.join(live, ".git", ref), "ref: refs/heads/main\n"); }],
+    ["rewind", (cwd) => { const c = g(cwd, "commit-tree", g(cwd, "rev-parse", "main^{tree}"), "-p", "main", "-m", "drops a.js"); g(cwd, "update-ref", "HEAD", c); }],
+    ["planted alternate", (cwd, runEnv) => { commit(cwd, "b.js", "2\n"); fs.writeFileSync(path.join(runEnv.GIT_OBJECT_DIRECTORY, "info", "alternates"), path.join(TMP, "x") + "\n"); }],
+  ];
+  for (const [what, act] of cases) {
+    const { last } = await exec("7500003", "q3", async (bin, text, cwd, runEnv) => { act(cwd, runEnv); return { ok: true, text: "done\nSTATUS: COMPLETE" }; });
+    assert.match(last, /STATUS: BLOCKED/, what);
+    assert.equal(g(origin, "rev-parse", "refs/heads/chatgpt/7500003-x"), pushed, what + ": origin unchanged");
+    assert.equal(g(live, "rev-parse", "refs/heads/chatgpt/7500003-x"), pushed, what + ": the task branch unchanged");
+    assert.equal(g(live, "rev-parse", "main"), main, what + ": main unchanged");
+  }
+});
+
+test("R3-review: an untracked file the model forgot to add is reported, not hidden", async () => {
+  source("q4");
+  const { last } = await exec("7500004", "q4", async (bin, text, cwd) => { fs.writeFileSync(path.join(cwd, "forgot.js"), "1\n"); return { ok: true, text: "done\nSTATUS: COMPLETE" }; });
+  assert.match(last, /working tree: 1 uncommitted change\(s\)/);
+});
+
+test("R3-review: the HFS-ignorable character class is written as escapes, not invisible characters", () => {
+  const src = fs.readFileSync(path.join(__dirname, "..", "executor.js"), "utf8");
+  assert.ok(src.includes("const IGNORABLE = /[\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u206f\\ufeff]/g;"));
+  assert.ok(!/[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/.test(src), "no invisible characters in executor.js");
+  assert.ok(executor.isGitPath(".g\u200cit/x") && executor.isGitPath(".gitmodules\ufeff"));
+});
+
 // ---------- F2/F5 and R6: every bridge git call, as the logging wrapper saw it (runs last: it reads the whole log) ----------
 const REQUIRED = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "core.sshCommand=ssh", "core.askPass=", "core.pager=cat", "diff.external=",
-  "filter.lfs.process=", "protocol.allow=never", "protocol.ext.allow=never", "submodule.recurse=false", "core.attributesFile=/dev/null"];
+  "filter.lfs.process=", "protocol.allow=never", "protocol.ext.allow=never", "submodule.recurse=false", "core.attributesFile=/dev/null",
+  "core.commitGraph=false", "core.multiPackIndex=false"];
 test("F2/F5: every bridge git call is hardened and pinned; credentials only on push/ls-remote/fetch, in the environment, never argv; pushes name a checked sha and the source URL", () => {
   const calls = fs.readdirSync(GITLOG).map((f) => fs.readFileSync(path.join(GITLOG, f), "utf8").replace(/^CALL\n/, "")).map((rec) => {
     const c = { args: [], env: {} };

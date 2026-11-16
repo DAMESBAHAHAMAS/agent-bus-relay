@@ -72,7 +72,7 @@ function delegation(env) {
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 const ZERO_OID = "0".repeat(40);
 const OID = /^[0-9a-f]{40}$/;
-const MAX_COMMITS = 200;
+const MAX_COMMITS = 1000;
 // /usr/bin/git on macOS is an xcrun shim that consults a cache in the user's temp folder; use the real binary.
 function realGitBin() {
   if (process.env.BUS_GIT_BIN) return process.env.BUS_GIT_BIN;
@@ -87,8 +87,8 @@ const GIT_HARDEN = ["--attr-source=" + EMPTY_TREE].concat(...[
   "core.fsmonitor=false", "core.hooksPath=/dev/null", "core.sshCommand=ssh", "core.askPass=", "core.pager=cat", "core.attributesFile=/dev/null",
   "core.untrackedCache=false", "diff.external=", "filter.lfs.process=", "filter.lfs.clean=", "filter.lfs.smudge=", "filter.lfs.required=false",
   "protocol.allow=never", "protocol.https.allow=always", "protocol.ssh.allow=always", "protocol.file.allow=" + FILE_PROTOCOL, "protocol.ext.allow=never",
-  "submodule.recurse=false", "fetch.recurseSubmodules=false", "push.recurseSubmodules=no", "status.submoduleSummary=false", "status.showUntrackedFiles=no",
-  "gc.auto=0", "maintenance.auto=false"].map((kv) => ["-c", kv]));
+  "submodule.recurse=false", "fetch.recurseSubmodules=false", "push.recurseSubmodules=no", "status.submoduleSummary=false",
+  "core.commitGraph=false", "core.multiPackIndex=false", "gc.auto=0", "maintenance.auto=false"].map((kv) => ["-c", kv]));
 // With no system or global config, a push to an https origin would lose the owner's credential helper. The owner's own
 // credential.* settings are read once, from the system and global files only (never a repository), outside any repository.
 let transport = null;
@@ -147,7 +147,7 @@ const wtCtx = (repo) => ({ cwd: repo.cwd, gitDir: repo.gitDir, workTree: repo.cw
 // .gitmodules file, or any path with a .git component, including the variants git itself treats as .git or .gitmodules:
 // case, trailing dots and spaces, HFS-ignorable characters, NTFS alternate data streams (".git::$INDEX_ALLOCATION"),
 // backslash separators and 8.3 short names (git~1, gitmod~1..4, gi7eba~1..9). Empty .git folders are listed with -t.
-const IGNORABLE = /[​-‏‪-‮⁠-⁯﻿]/g;
+const IGNORABLE = /[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g;
 function isGitPath(p) {
   return String(p).split(/[\\/]/).some((c) => {
     const n = c.replace(IGNORABLE, "").toLowerCase().split(":")[0].replace(/[ .]+$/, "");
@@ -170,12 +170,14 @@ const unsafe = (recs) => recs.filter((r) => r.dst !== "000000" && (r.dst === "16
 const DIFF_OPTS = ["-r", "-z", "--raw", "--no-renames", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none"];
 const BAD_REASON = "adds or changes a gitlink (nested repository), .gitmodules or a .git path";
 // Every commit in base..tip, each against each of its parents (a root commit against the empty tree), on objects only.
-async function commitsSafety(ctx, base, tip) {
+// from: a commit on the way from base to tip that is already checked (the task branch the bridge recorded and checked).
+async function commitsSafety(ctx, base, tip, from) {
   const no = (reason, bad) => ({ ok: false, bad: bad || [], reason });
-  if (!OID.test(String(base || "")) || !OID.test(String(tip || ""))) return no("has no valid fork point or tip to compare");
+  if (!OID.test(String(base || "")) || !OID.test(String(tip || "")) || (from && !OID.test(from))) return no("has no valid fork point or tip to compare");
   if (base === tip) return { ok: true, bad: [], count: 0 };
   if (!(await git(["merge-base", "--is-ancestor", base, tip], ctx)).ok) return no("does not descend from its fork point");
-  const list = await git(["rev-list", "--parents", "--max-count=" + (MAX_COMMITS + 1), base + ".." + tip, "--"], ctx);
+  if (from && !(await git(["merge-base", "--is-ancestor", from, tip], ctx)).ok) return no("does not build on the task branch (it rewrites or drops its commits)");
+  const list = await git(["rev-list", "--parents", "--max-count=" + (MAX_COMMITS + 1), (from || base) + ".." + tip, "--"], ctx);
   if (!list.ok) return no("could not list the branch's commits");
   const lines = list.out ? list.out.split("\n") : [];
   if (lines.length > MAX_COMMITS) return no("has more than " + MAX_COMMITS + " commits to check");
@@ -266,7 +268,9 @@ async function prepareRepo(d, task, run) {
   }
   const defSha = def && await resolveCommit(sctx, def);
   if (!defSha) return { ok: false, reason: "repo " + d.repo + " has no default branch (origin/HEAD, origin/main or main) to start from" };
+  if (fs.existsSync(path.join(commonDir, "objects", "info", "alternates"))) return { ok: false, reason: "repo " + d.repo + " uses object alternates (objects/info/alternates), which the bridge does not trust" };
   repo.branch = "chatgpt/" + d.task_id + "-" + slug(task.name);
+  if ((await git(["symbolic-ref", "--quiet", "refs/heads/" + repo.branch], sctx)).ok) return { ok: false, reason: "the task branch " + repo.branch + " is a symbolic ref; the bridge will not follow or move it" };
   repo.existing = await resolveCommit(sctx, "refs/heads/" + repo.branch);
   repo.start = repo.existing || defSha;
   const mb = await git(["merge-base", repo.start, defSha], sctx);
@@ -279,7 +283,8 @@ async function prepareRepo(d, task, run) {
   repo.runRef = "chatgpt-run/" + d.task_id + "/" + run.id;
   repo.cwd = path.join(run.dir, d.repo);
   const add = await git(["worktree", "add", "--quiet", "--no-track", "-b", repo.runRef, repo.cwd, repo.start], sctx);
-  if (!add.ok) return { ok: false, reason: "could not create a worktree: " + add.err.slice(0, 160) };
+  if (!add.ok) { await detachRun(repo); return { ok: false, reason: "could not create a worktree: " + add.err.slice(0, 160) }; }
+  const fail = async (reason) => { await detachRun(repo); return { ok: false, reason }; };
   try {   // recorded now, before the model runs; validateWorktree compares against it later
     const line = fs.readFileSync(path.join(repo.cwd, ".git"), "utf8").match(/^gitdir: ([^\n]+)\n?$/);
     repo.gitDir = line ? fs.realpathSync(path.resolve(repo.cwd, line[1])) : "";
@@ -287,23 +292,45 @@ async function prepareRepo(d, task, run) {
     const reflog = path.join(commonDir, "logs", "refs", "heads", ...repo.runRef.split("/"));
     fs.mkdirSync(path.dirname(reflog), { recursive: true });
     fs.closeSync(fs.openSync(reflog, "a"));   // exists, so a commit appends to it and never needs to create folders
-  } catch (e) { return { ok: false, reason: "could not record the worktree (" + (e.code || e.message) + ")" }; }
+  } catch (e) { return fail("could not record the worktree (" + (e.code || e.message) + ")"); }
   const v = validateWorktree(repo);
-  if (!v.ok) return { ok: false, reason: v.reason };
+  if (!v.ok) return fail(v.reason);
   return Object.assign(repo, { ok: true });
 }
-// The run branch, read once to one sha (objects may sit in the run's own object folder).
+// The run branch, read once to one sha, from its own loose ref file (never followed as a symbolic ref).
+const runRefFile = (repo) => path.join(repo.commonDir, "refs", "heads", ...repo.runRef.split("/"));
 async function runSha(repo) {
-  const r = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", "refs/heads/" + repo.runRef + "^{commit}"], srcCtx(repo, true));
-  return r.ok && OID.test(r.out) ? r.out : "";
+  let sha = "";
+  try { const f = runRefFile(repo); if (fs.lstatSync(f).isFile()) sha = (fs.readFileSync(f, "utf8").match(/^([0-9a-f]{40})\n?$/) || [])[1] || ""; } catch (e) {}
+  if (!sha) return "";
+  const r = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", sha + "^{commit}"], srcCtx(repo, true));
+  return r.ok && r.out === sha ? sha : "";
+}
+// The run's own object folder may hold loose objects only: no alternates, commit-graph, multi-pack-index or packs (which
+// the bridge's git would otherwise read), and no symlinks.
+function objectsClean(repo) {
+  try {
+    const dir = repo.objects;
+    if (fs.realpathSync(dir) !== dir || !fs.lstatSync(dir).isDirectory()) return "the run's object folder is not the plain folder the bridge made";
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (e.name === "pack" || e.name === "info") {
+        if (!e.isDirectory() || fs.readdirSync(path.join(dir, e.name)).length) return "the run's object folder has " + e.name + "/ content";
+      } else if (/^[0-9a-f]{2}$/.test(e.name) && e.isDirectory()) {
+        for (const f of fs.readdirSync(path.join(dir, e.name), { withFileTypes: true })) if (!f.isFile()) return "the run's object folder has a non-file entry";
+      } else return "the run's object folder has an unexpected entry";
+    }
+  } catch (err) { return "the run's object folder is unreadable (" + (err.code || "error") + ")"; }
+  return "";
 }
 async function branchSafety(repo) {
   const no = (reason, extra) => Object.assign({ ok: false, bad: [], reason }, extra);
   const v = validateWorktree(repo);
   if (!v.ok) return no("comes from a worktree that failed validation (" + v.why + ")");
+  const dirty = objectsClean(repo);
+  if (dirty) return no("comes from a run whose objects failed validation (" + dirty + ")");
   const sha = await runSha(repo);
-  if (!sha) return no("does not resolve to a commit");
-  const s = await commitsSafety(srcCtx(repo, true), repo.base, sha);
+  if (!sha) return no("does not resolve to a commit (the run branch must be a plain ref to a commit)");
+  const s = await commitsSafety(srcCtx(repo, true), repo.base, sha, repo.existing || undefined);
   if (!s.ok) return Object.assign(s, { sha });
   // The index too: the bridge's own git status reads it.
   const staged = await git(["diff-index", "--cached"].concat(DIFF_OPTS, [sha]), wtCtx(repo), { raw: true });
@@ -339,12 +366,37 @@ async function pushBranch(repo, safety) {
   if (s.sha !== repo.start) {
     const imp = await importObjects(repo, s.sha);
     if (!imp.ok) return { ok: false, out: "", err: "refused: the commits' objects did not pass index-pack --strict: " + imp.err };
-    const up = await git(["update-ref", "-m", "chatgpt run " + repo.runId, "refs/heads/" + repo.branch, s.sha, repo.existing || ZERO_OID], srcCtx(repo));
+    const up = await git(["update-ref", "--no-deref", "-m", "chatgpt run " + repo.runId, "refs/heads/" + repo.branch, s.sha, repo.existing || ZERO_OID], srcCtx(repo));
     if (!up.ok) return { ok: false, out: "", err: "could not move " + repo.branch + ": " + up.err.slice(0, 160) };
   }
   if (!repo.url) return { ok: false, out: "", err: "no remote.origin.url in ~/Developer's copy of the repository" };
   const p = await git(["push", "--quiet", "--no-verify", "--no-recurse-submodules", repo.url, s.sha + ":refs/heads/" + repo.branch], srcCtx(repo));
   return Object.assign(p, { sha: s.sha });
+}
+
+// After the run (and if a run could not start), the bridge takes the run back out of ~/Developer/<repo>/.git, so nothing
+// there refers to the run's own objects or to anything the model wrote: the run branch ref and its reflog are deleted
+// (never followed as a symbolic ref) and the worktree's git folder moves into the run folder, next to the work tree it
+// served. The run folder keeps the files, the objects and run-branch.txt (the run branch's last value) as evidence.
+async function detachRun(repo) {
+  if (!repo || !repo.commonDir || !repo.runDir || !/^chatgpt-run\/\d{6,25}\/[0-9TZ]+-[0-9a-f]{24}$/.test(String(repo.runRef || ""))) return { ok: false };
+  let ok = true;
+  const refFile = runRefFile(repo), reflog = path.join(repo.commonDir, "logs", "refs", "heads", ...repo.runRef.split("/"));
+  let tip = ""; try { tip = fs.readFileSync(refFile, "utf8").slice(0, 120).trim(); } catch (e) {}
+  try { fs.writeFileSync(path.join(repo.runDir, "run-branch.txt"), repo.runRef + " " + (tip || "(none)") + "\n"); } catch (e) {}
+  const del = await git(["update-ref", "--no-deref", "-d", "refs/heads/" + repo.runRef], srcCtx(repo));
+  for (const f of [refFile, refFile + ".lock", reflog]) {   // a ref the model broke: remove the file itself (unlink never follows a symlink)
+    try { fs.unlinkSync(f); } catch (e) { if (e.code !== "ENOENT") ok = false; }
+  }
+  if (!del.ok && fs.existsSync(refFile)) ok = false;
+  if (repo.gitDir && path.dirname(repo.gitDir) === path.join(repo.commonDir, "worktrees")) {
+    const dest = path.join(repo.runDir, "worktree-git");
+    try { fs.renameSync(repo.gitDir, dest); } catch (e) {
+      if (e.code === "EXDEV") { try { fs.cpSync(repo.gitDir, dest, { recursive: true, verbatimSymlinks: true }); fs.rmSync(repo.gitDir, { recursive: true, force: true }); } catch (e2) { ok = false; } }
+      else if (e.code !== "ENOENT") ok = false;
+    }
+  }
+  return { ok };
 }
 
 // What the bridge itself checked after the run. This, not the model's report, is the verifiable evidence.
@@ -358,7 +410,7 @@ async function verify(cwd, repo, safety) {
     const sha = s.sha || "";
     const n = sha ? await git(["rev-list", "--count", repo.base + ".." + sha, "--"], srcCtx(repo, true)) : { out: "0" };
     const log = sha ? await git(["log", "--oneline", "--no-decorate", "--no-show-signature", "-5", repo.base + ".." + sha, "--"], srcCtx(repo, true)) : { out: "" };
-    const dirty = valid.ok ? await git(["status", "--porcelain", "--ignore-submodules=all", "--untracked-files=no"], wtCtx(repo)) : null;
+    const dirty = valid.ok ? await git(["status", "--porcelain", "--ignore-submodules=all", "--untracked-files=normal"], wtCtx(repo)) : null;
     const remote = repo.url ? await git(["ls-remote", "--heads", repo.url, "refs/heads/" + repo.branch], srcCtx(repo)) : { ok: false, out: "" };
     const remoteSha = remote.ok ? remote.out.split(/\s+/)[0] : "";
     lines.push("- repo worktree: " + repo.cwd + " (run branch " + repo.runRef + ")",
@@ -496,6 +548,15 @@ function summarize(u) {
 
 async function recoverInterrupted(postFor) {
   let m; try { m = JSON.parse(fs.readFileSync(MARKER, "utf8")); } catch (e) { return null; }
+  // A repository run cut short is taken back out of the repository too. The marker is the bridge's own file (no run can write it).
+  const r = m && m.repo;
+  let known = false;
+  try {
+    known = !!r && typeof r === "object" && typeof r.src === "string" && typeof r.commonDir === "string" && typeof r.runDir === "string" &&
+      fs.realpathSync(path.join(r.src, ".git")) === r.commonDir && r.commonDir.startsWith(fs.realpathSync(DEV_ROOT) + path.sep) &&
+      r.runDir.startsWith(fs.realpathSync(WORK_ROOT) + path.sep) && (!r.gitDir || path.dirname(r.gitDir) === path.join(r.commonDir, "worktrees"));
+  } catch (e) {}
+  if (known) await detachRun(r).catch(() => {});
   await postFor(m.cid, "result", maskIds("This notice is from the Mac bridge, not from Claude Code. The run for task " + m.task_id + " (started " + m.at +
     ") was interrupted by a bridge restart and did not finish. Nothing was written to Zoho by this run. Send the same delegate_task again with a NEW idempotency_key.\n" +
     "STATUS: BLOCKED: run interrupted by a bridge restart; retry with a new idempotency_key.", [m.task_id]));
@@ -521,22 +582,24 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
   if (d.invalid) return post("result", "STATUS: BLOCKED: a delegated task needs numeric project_id and task_id and a non-empty instruction.");
   if (running) return post("result", "STATUS: BLOCKED: another delegated task is running. Retry with a new idempotency_key when it finishes.");
   running = true;
+  let repo = null;
   try {
     const task = await check(d.project_id, d.task_id);
     if (!task || !task.ok) return post("result", "STATUS: BLOCKED: task " + d.task_id + " is not usable: " + ((task && task.reason) || "lookup failed") + ". Only open tasks in Damian's system of record can be delegated.");
     if (!task.open) return post("result", "STATUS: BLOCKED: task " + d.task_id + " (" + task.name + ") is closed.");
     let runDir;
     try { runDir = newRun(d.task_id); } catch (e) { return post("result", "STATUS: BLOCKED: could not make a new run folder (" + String(e.code || e.message).slice(0, 80) + ")."); }
-    let repo = null, cwd = runDir.dir, runEnv = childEnv;
+    let cwd = runDir.dir, runEnv = childEnv;
     if (d.repo) {
       repo = await prepareRepo(d, task, runDir);
-      if (!repo.ok) return post("result", "STATUS: BLOCKED: " + repo.reason + ".");
+      if (!repo.ok) { const why = repo.reason; repo = null; return post("result", "STATUS: BLOCKED: " + why + "."); }
       cwd = repo.cwd;
       // The model's git writes new objects to the run's own object folder; the repository's objects are read through an alternate.
       runEnv = Object.assign({}, childEnv, { GIT_OBJECT_DIRECTORY: repo.objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(repo.commonDir, "objects") });
     }
     await post("ack", "STATUS: STARTED " + cid + " on task " + d.task_id + " (" + task.name + ")" + (repo ? " in " + d.repo + " on branch " + repo.branch : "") + ". The result will follow on this correlation id.");
-    fs.writeFileSync(MARKER, JSON.stringify({ cid, task_id: d.task_id, at: new Date().toISOString() }));
+    fs.writeFileSync(MARKER, JSON.stringify({ cid, task_id: d.task_id, at: new Date().toISOString(),
+      repo: repo ? { src: repo.src, commonDir: repo.commonDir, gitDir: repo.gitDir, runRef: repo.runRef, runDir: repo.runDir } : undefined }));
     log("delegated task", d.task_id, "started for", cid, "in", cwd);
     const r = await run(claudeBin, prompt(task, d, cid, repo), cwd, runEnv, repo);
     const safety = repo ? await branchSafety(repo) : null;
@@ -557,8 +620,11 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
     const m = report.match(/\n?STATUS:\s*(COMPLETE|BLOCKED)[^\n]*\s*$/i);
     const text = m ? report.slice(0, m.index).trimEnd() + zoho + "\n" + m[0].trim() : report + zoho + status;
     return post("result", text.slice(-3500));
-  } finally { running = false; try { fs.unlinkSync(MARKER); } catch (e) {} }
+  } finally {
+    if (repo && repo.ok) { const r = await detachRun(repo).catch(() => ({ ok: false })); if (!r.ok) log("delegated task", d.task_id, "could not fully detach run", repo.runRef); }
+    running = false; try { fs.unlinkSync(MARKER); } catch (e) {}
+  }
 }
 
 module.exports = { delegation, execute, recoverInterrupted, maskIds, prompt, checkTask, runClaude, updateTask, splitReport, summarize, prepareRepo, verify, execArgs, execSettings, EXEC_TOOLS, SETTINGS,
-  git, gitEnv, GIT_HARDEN, branchSafety, commitsSafety, validateWorktree, isGitPath, pushBranch, newRun, transportConfig, GIT_BIN, MARKER };
+  git, gitEnv, GIT_HARDEN, branchSafety, commitsSafety, validateWorktree, detachRun, isGitPath, pushBranch, newRun, transportConfig, GIT_BIN, MARKER };
