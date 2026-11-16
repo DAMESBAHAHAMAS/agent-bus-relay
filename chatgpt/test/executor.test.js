@@ -11,6 +11,7 @@ const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "exec-test-"));
 process.env.BUS_EXEC_ROOT = path.join(TMP, "exec");
 process.env.BUS_DEV_ROOT = path.join(TMP, "Developer");
 process.env.BUS_DELEGATION_SWITCH = path.join(TMP, "delegation.on");
+process.env.BUS_GIT_FILE_PROTOCOL = "always";   // the throwaway origin is a local path; the bridge's default is protocol.file.allow=never
 const executor = require("../executor");
 
 const g = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8", env: Object.assign({}, process.env, {
@@ -51,17 +52,30 @@ test("a forbidden repo is refused before any lookup or run", async () => {
   assert.match(posts[0].text, /STATUS: BLOCKED: repo must be/);
 });
 
-test("a repo task runs in a bridge-made worktree on its own branch; the bridge verifies commits and push", async () => {
+const RUN_ID = /^\d{8}T\d{6}Z-[0-9a-f]{24}$/;   // revision 3: a fresh, random run folder per run
+const EXEC_REAL = () => fs.realpathSync(process.env.BUS_EXEC_ROOT);
+let firstCwd;
+test("a repo task runs in a bridge-made worktree on its own run branch; the bridge verifies commits, moves the task branch and pushes", async () => {
   let seen;
-  const posts = await exec(env({ repo: "demo" }), async (bin, text, cwd) => {
-    seen = { text, cwd, branch: g(cwd, "rev-parse", "--abbrev-ref", "HEAD") };
+  const posts = await exec(env({ repo: "demo" }), async (bin, text, cwd, runEnv) => {
+    seen = { text, cwd, branch: g(cwd, "rev-parse", "--abbrev-ref", "HEAD"), objects: runEnv.GIT_OBJECT_DIRECTORY };
     fs.writeFileSync(path.join(cwd, "widget.js"), "module.exports = 1;\n");
-    g(cwd, "add", "widget.js"); g(cwd, "commit", "-qm", "Fix the widget");   // the model commits; it does not push
+    // the model commits with the environment the bridge gives it (new objects go to the run's own object folder); it does not push
+    const mg = (...a) => execFileSync("git", a, { cwd, encoding: "utf8", env: Object.assign({}, runEnv, { GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" }) });
+    mg("add", "widget.js"); mg("commit", "-qm", "Fix the widget");
+    seen.objectsInRun = fs.readdirSync(runEnv.GIT_OBJECT_DIRECTORY).filter((x) => /^[0-9a-f]{2}$/.test(x)).length;
     return { ok: true, text: "Fixed.\nSTATUS: COMPLETE" };
   });
-  assert.strictEqual(seen.cwd, path.join(process.env.BUS_EXEC_ROOT, "2000002", "demo"));
-  assert.strictEqual(seen.branch, "chatgpt/2000002-fix-the-widget");
-  assert.match(seen.text, /already on branch chatgpt\/2000002-fix-the-widget/);
+  assert.strictEqual(path.dirname(path.dirname(seen.cwd)), path.join(EXEC_REAL(), "2000002"));
+  assert.match(path.basename(path.dirname(seen.cwd)), RUN_ID);
+  assert.strictEqual(path.basename(seen.cwd), "demo-" + path.basename(path.dirname(seen.cwd)));
+  firstCwd = seen.cwd;
+  assert.strictEqual(seen.objects, path.join(path.dirname(seen.cwd), "objects"));
+  assert.ok(seen.objectsInRun > 0, "the model's new objects were written to the run's own object folder");
+  assert.strictEqual(seen.branch, "chatgpt-run/2000002/" + path.basename(path.dirname(seen.cwd)));
+  assert.match(seen.text, /already on this run's own branch chatgpt-run\/2000002\//);
+  assert.match(seen.text, /pushes them to chatgpt\/2000002-fix-the-widget/);
+  assert.strictEqual(g(LIVE, "rev-parse", "refs/heads/chatgpt/2000002-fix-the-widget"), g(path.join(TMP, "origin.git"), "rev-parse", "chatgpt/2000002-fix-the-widget"), "the bridge moved the task branch to the pushed sha");
   assert.match(posts[0].text, /^STATUS: STARTED .* in demo on branch chatgpt\/2000002-fix-the-widget/);
   const res = posts[posts.length - 1];
   assert.strictEqual(res.type, "result");
@@ -78,15 +92,16 @@ test("a repo task runs in a bridge-made worktree on its own branch; the bridge v
   assert.strictEqual(fs.existsSync(path.join(LIVE, "widget.js")), false);
 });
 
-test("a retry of the same task continues on the same worktree and branch", async () => {
+test("a retry of the same task gets a NEW run folder and worktree, started from the task branch the bridge recorded", async () => {
   let cwd2, branch2;
   const posts = await exec(env({ repo: "demo" }), async (bin, text, cwd) => {
     cwd2 = cwd; branch2 = g(cwd, "rev-parse", "--abbrev-ref", "HEAD");
     fs.writeFileSync(path.join(cwd, "widget.js"), "module.exports = 2;\n");   // edited, not committed or pushed
     return { ok: true, text: "Half done.\nSTATUS: BLOCKED: ran out of time" };
   });
-  assert.strictEqual(cwd2, path.join(process.env.BUS_EXEC_ROOT, "2000002", "demo"));
-  assert.strictEqual(branch2, "chatgpt/2000002-fix-the-widget");
+  assert.notStrictEqual(cwd2, firstCwd, "never reused");
+  assert.strictEqual(path.dirname(path.dirname(cwd2)), path.join(EXEC_REAL(), "2000002"));
+  assert.match(branch2, /^chatgpt-run\/2000002\//);
   const res = posts[posts.length - 1].text;
   assert.match(res, /1 new commit\(s\)/);   // counted from the fork point, so the first attempt's commit still shows
   assert.match(res, /working tree: 1 uncommitted change\(s\)/);
@@ -131,8 +146,8 @@ test("posts mask this run's own Luhn-valid Zoho ids, while the push uses the rea
       fs.writeFileSync(path.join(cwd, "m.js"), "1\n"); g(cwd, "add", "m.js"); g(cwd, "commit", "-qm", "mask");
       return { ok: true, text: "Done in " + cwd + " for task " + LUHN_TASK + ".\nSTATUS: COMPLETE" };
     } }).then(() => posted.splice(0));
-  assert.strictEqual(branch, "chatgpt/" + LUHN_TASK + "-mask-test");
-  assert.match(g(path.join(TMP, "origin.git"), "branch", "--list", branch), new RegExp(LUHN_TASK));   // pushed under the real name
+  assert.match(branch, new RegExp("^chatgpt-run/" + LUHN_TASK + "/"));
+  assert.match(g(path.join(TMP, "origin.git"), "branch", "--list", "chatgpt/" + LUHN_TASK + "-mask-test"), new RegExp(LUHN_TASK));   // pushed under the real name
   for (const p of posts) for (const id of [LUHN_TASK, LUHN_PROJECT, "1156860000009601243"]) assert.ok(!p.text.includes(id), p.type + " leaks " + id);
   assert.match(posts[0].text, /id…611011/);
   assert.match(posts.at(-1).text, /pushed to origin: yes, remote head matches/);
