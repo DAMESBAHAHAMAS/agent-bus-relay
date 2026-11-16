@@ -68,7 +68,7 @@ test("a repo task runs in a bridge-made worktree on its own run branch; the brid
   });
   assert.strictEqual(path.dirname(path.dirname(seen.cwd)), path.join(EXEC_REAL(), "2000002"));
   assert.match(path.basename(path.dirname(seen.cwd)), RUN_ID);
-  assert.strictEqual(path.basename(seen.cwd), "demo");
+  assert.strictEqual(path.basename(seen.cwd), "demo-" + path.basename(path.dirname(seen.cwd)));
   firstCwd = seen.cwd;
   assert.strictEqual(seen.objects, path.join(path.dirname(seen.cwd), "objects"));
   assert.ok(seen.objectsInRun > 0, "the model's new objects were written to the run's own object folder");

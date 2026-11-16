@@ -303,7 +303,40 @@ test("R3-review: after every run the live repository holds no run branch, no run
   g(live, "repack", "-a", "-d", "-q");
   const runs = fs.readdirSync(path.join(EXEC, "7500001"));
   assert.equal(runs.length, 2);
-  for (const r of runs) for (const f of ["run-branch.txt", "worktree-git", "q1", "objects"]) assert.ok(fs.existsSync(path.join(EXEC, "7500001", r, f)), "kept as evidence: " + f);
+  for (const r of runs) for (const f of ["run-branch.txt", "worktree-git", "q1-" + r, "objects"]) assert.ok(fs.existsSync(path.join(EXEC, "7500001", r, f)), "kept as evidence: " + f);
+});
+
+test("R3-review: a run ref or listed file swapped for a symlink or FIFO is never read through by the bridge", async () => {
+  const { live } = source("q5");
+  const secret = path.join(TMP, "secret.txt"); fs.writeFileSync(secret, "TOPSECRET-should-never-be-copied\n");
+  let runDir;
+  const { last } = await exec("7500005", "q5", async (bin, text, cwd) => {
+    runDir = path.dirname(cwd);
+    const ref = path.join(live, ".git", g(cwd, "symbolic-ref", "HEAD"));
+    fs.unlinkSync(ref); fs.symlinkSync(secret, ref);
+    return { ok: true, text: "done\nSTATUS: COMPLETE" };
+  });
+  assert.match(last, /STATUS: BLOCKED/);
+  assert.doesNotMatch(fs.readFileSync(path.join(runDir, "run-branch.txt"), "utf8"), /TOPSECRET/);
+  assert.equal(g(live, "for-each-ref", "refs/heads/chatgpt-run/"), "");
+  assert.equal(executor.readPlain(path.join(runDir, "nope")), null);
+  const fifo = path.join(TMP, "fifo"); execFileSync("mkfifo", [fifo]);
+  assert.equal(executor.readPlain(fifo), null, "a FIFO is refused without blocking");
+  const link = path.join(TMP, "link"); fs.symlinkSync(secret, link);
+  assert.equal(executor.readPlain(link), null, "a symlink is refused");
+  const np = await exec("7500006", undefined, async (bin, text, cwd) => { fs.symlinkSync(secret, path.join(cwd, "listed.txt")); fs.writeFileSync(path.join(cwd, "real.txt"), "r\n"); return { ok: true, text: "done\nSTATUS: COMPLETE" }; });
+  assert.doesNotMatch(np.last, /listed\.txt/, "a symlink in the work folder is not hashed through");
+  assert.match(np.last, /real\.txt \(2 bytes/);
+});
+
+test("R3-review: runClaude kills the run's whole process group when the CLI exits, so a background process stops writing", async () => {
+  const fake = path.join(BIN, "fake-claude.sh"), late = path.join(TMP, "late-write.txt");
+  fs.writeFileSync(fake, "#!/bin/sh\n( sleep 2; echo late > '" + late + "' ) &\nprintf '%s\\n' '{\"result\": \"ok STATUS: COMPLETE\", \"subtype\": \"success\"}'\n", { mode: 0o755 });
+  const run = executor.newRun("7500007");
+  const r = await executor.runClaude(fake, "P", run.dir, process.env, null);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  await new Promise((res) => setTimeout(res, 3000));
+  assert.ok(!fs.existsSync(late), "the background process outlived the run and wrote after it");
 });
 
 test("R3-review: a symbolic task branch is refused and never followed (the live main does not move)", async () => {

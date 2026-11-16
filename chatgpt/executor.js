@@ -83,8 +83,11 @@ function realGitBin() {
 }
 const GIT_BIN = realGitBin();
 const FILE_PROTOCOL = process.env.BUS_GIT_FILE_PROTOCOL === "always" ? "always" : "never";
+// ssh for push/fetch is plain "ssh" (from PATH), whatever any git config says; a deploy key can be set for the bridge only,
+// through BUS_GIT_SSH_COMMAND in its own (LaunchAgent) environment, which no run can reach.
+const SSH_COMMAND = process.env.BUS_GIT_SSH_COMMAND || "ssh";
 const GIT_HARDEN = ["--attr-source=" + EMPTY_TREE].concat(...[
-  "core.fsmonitor=false", "core.hooksPath=/dev/null", "core.sshCommand=ssh", "core.askPass=", "core.pager=cat", "core.attributesFile=/dev/null",
+  "core.fsmonitor=false", "core.hooksPath=/dev/null", "core.sshCommand=" + SSH_COMMAND, "core.askPass=", "core.pager=cat", "core.attributesFile=/dev/null",
   "core.untrackedCache=false", "diff.external=", "filter.lfs.process=", "filter.lfs.clean=", "filter.lfs.smudge=", "filter.lfs.required=false",
   "protocol.allow=never", "protocol.https.allow=always", "protocol.ssh.allow=always", "protocol.file.allow=" + FILE_PROTOCOL, "protocol.ext.allow=never",
   "submodule.recurse=false", "fetch.recurseSubmodules=false", "push.recurseSubmodules=no", "status.submoduleSummary=false",
@@ -174,14 +177,15 @@ const BAD_REASON = "adds or changes a gitlink (nested repository), .gitmodules o
 async function commitsSafety(ctx, base, tip, from) {
   const no = (reason, bad) => ({ ok: false, bad: bad || [], reason });
   if (!OID.test(String(base || "")) || !OID.test(String(tip || "")) || (from && !OID.test(from))) return no("has no valid fork point or tip to compare");
-  if (base === tip) return { ok: true, bad: [], count: 0 };
+  if (from && from !== tip && !(await git(["merge-base", "--is-ancestor", from, tip], ctx)).ok) return no("does not build on the task branch (it rewrites or drops its commits)");
+  if (base === tip || from === tip) return { ok: true, bad: [], count: 0 };
   if (!(await git(["merge-base", "--is-ancestor", base, tip], ctx)).ok) return no("does not descend from its fork point");
-  if (from && !(await git(["merge-base", "--is-ancestor", from, tip], ctx)).ok) return no("does not build on the task branch (it rewrites or drops its commits)");
   const list = await git(["rev-list", "--parents", "--max-count=" + (MAX_COMMITS + 1), (from || base) + ".." + tip, "--"], ctx);
   if (!list.ok) return no("could not list the branch's commits");
   const lines = list.out ? list.out.split("\n") : [];
   if (lines.length > MAX_COMMITS) return no("has more than " + MAX_COMMITS + " commits to check");
   const bad = new Set();
+  if (lines.reduce((n, l) => n + Math.max(1, l.split(" ").length - 1), 0) > MAX_COMMITS * 2) return no("has too many commit-parent pairs to check");
   for (const line of lines) {
     const [c, ...parents] = line.split(" ");
     if (!OID.test(c) || parents.some((p) => !OID.test(p))) return no("could not parse the branch's commits");
@@ -210,6 +214,20 @@ function newRun(taskId) {
   return { id, dir, taskDir, root };
 }
 
+// Read a small file the model may be able to reach: never through a symlink (O_NOFOLLOW), never a FIFO or device (it must
+// be a regular file once open), and at most max bytes. Returns null otherwise.
+function readPlain(p, max = 4096, raw = false) {
+  let fd;
+  try {
+    fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > max) return null;
+    const buf = Buffer.alloc(st.size);
+    const n = st.size ? fs.readSync(fd, buf, 0, st.size, 0) : 0;
+    return raw ? buf.subarray(0, n) : buf.subarray(0, n).toString("utf8");
+  } catch (e) { return null; } finally { if (fd !== undefined) try { fs.closeSync(fd); } catch (e) {} }
+}
+
 // The worktree must still be exactly the one the bridge made: no symlink in its path, .git a regular file naming the
 // recorded git folder under ~/Developer/<repo>/.git/worktrees, whose back-pointer and commondir lead back to the work tree
 // and the source repository, and whose HEAD is still the symbolic ref to this run's branch. Checked before every bridge git
@@ -224,15 +242,17 @@ function validateWorktree(repo) {
     if (path.dirname(wt) !== repo.runDir || fs.realpathSync(wt) !== wt || !fs.lstatSync(wt).isDirectory()) return no("work tree path is not the plain folder the bridge made");
     const dotgit = path.join(wt, ".git"), ds = fs.lstatSync(dotgit);
     if (!ds.isFile() || ds.size > 4096) return no(".git is not a regular file");
-    const m = fs.readFileSync(dotgit, "utf8").match(/^gitdir: ([^\n]+)\n?$/);
+    const m = String(readPlain(dotgit)).match(/^gitdir: ([^\n]+)\n?$/);
     if (!m || fs.realpathSync(path.resolve(wt, m[1])) !== repo.gitDir) return no(".git does not point at the recorded git folder");
     if (path.dirname(repo.gitDir) !== path.join(repo.commonDir, "worktrees") || fs.realpathSync(repo.gitDir) !== repo.gitDir || !fs.lstatSync(repo.gitDir).isDirectory())
       return no("git folder is not under the source repository's worktrees");
     const back = path.join(repo.gitDir, "gitdir"), common = path.join(repo.gitDir, "commondir"), head = path.join(repo.gitDir, "HEAD");
     for (const f of [back, common, head]) if (!fs.lstatSync(f).isFile()) return no(path.basename(f) + " is not a regular file");
-    if (fs.realpathSync(path.resolve(repo.gitDir, fs.readFileSync(back, "utf8").trim())) !== dotgit) return no("gitdir back-pointer does not lead to the work tree");
-    if (fs.realpathSync(path.resolve(repo.gitDir, fs.readFileSync(common, "utf8").trim())) !== repo.commonDir) return no("commondir does not lead to the source repository");
-    if (fs.readFileSync(head, "utf8") !== "ref: refs/heads/" + repo.runRef + "\n") return no("HEAD is not the symbolic ref to this run's branch");
+    const [b, c, h] = [back, common, head].map((f) => readPlain(f));
+    if (b === null || c === null || h === null) return no("a pointer file is not a small regular file");
+    if (fs.realpathSync(path.resolve(repo.gitDir, b.trim())) !== dotgit) return no("gitdir back-pointer does not lead to the work tree");
+    if (fs.realpathSync(path.resolve(repo.gitDir, c.trim())) !== repo.commonDir) return no("commondir does not lead to the source repository");
+    if (h !== "ref: refs/heads/" + repo.runRef + "\n") return no("HEAD is not the symbolic ref to this run's branch");
     if (fs.existsSync(path.join(repo.gitDir, "config.worktree"))) return no("config.worktree present");
   } catch (e) { return no(e.code || "unreadable"); }
   return { ok: true };
@@ -280,8 +300,9 @@ async function prepareRepo(d, task, run) {
     const s = await commitsSafety(sctx, repo.base, repo.existing);
     if (!s.ok) return { ok: false, reason: "the existing task branch " + repo.branch + " " + s.reason + (s.bad.length ? ": " + s.bad.slice(0, 5).join(", ") : "") + "; the bridge will not continue it" };
   }
+  await sweepStale(repo);
   repo.runRef = "chatgpt-run/" + d.task_id + "/" + run.id;
-  repo.cwd = path.join(run.dir, d.repo);
+  repo.cwd = path.join(run.dir, d.repo + "-" + run.id);   // a unique name, so the worktree's git folder name is never reused
   const add = await git(["worktree", "add", "--quiet", "--no-track", "-b", repo.runRef, repo.cwd, repo.start], sctx);
   if (!add.ok) { await detachRun(repo); return { ok: false, reason: "could not create a worktree: " + add.err.slice(0, 160) }; }
   const fail = async (reason) => { await detachRun(repo); return { ok: false, reason }; };
@@ -297,11 +318,31 @@ async function prepareRepo(d, task, run) {
   if (!v.ok) return fail(v.reason);
   return Object.assign(repo, { ok: true });
 }
+// Runs that a crash, or a process that outlived its run, left in the repository are taken out before a new one starts:
+// any refs/heads/chatgpt-run/* ref is deleted (never followed) and any worktrees/<name>-<run id> folder moves to
+// ~/.agent-bus/exec/.detached (the bridge's own folder; no run can write there).
+const RUN_NAME = /-\d{8}T\d{6}Z-[0-9a-f]{24}$/;
+async function sweepStale(repo) {
+  const refs = await git(["for-each-ref", "--format=%(refname)", "refs/heads/chatgpt-run/"], srcCtx(repo));
+  for (const ref of refs.ok && refs.out ? refs.out.split("\n") : []) {
+    if (/^refs\/heads\/chatgpt-run\/\d{6,25}\/\d{8}T\d{6}Z-[0-9a-f]{24}$/.test(ref)) await git(["update-ref", "--no-deref", "-d", ref], srcCtx(repo));
+  }
+  const wts = path.join(repo.commonDir, "worktrees");
+  let names = []; try { names = fs.readdirSync(wts); } catch (e) {}
+  for (const n of names.filter((x) => RUN_NAME.test(x))) {
+    try {
+      const dest = path.join(fs.realpathSync(WORK_ROOT), ".detached");
+      fs.mkdirSync(dest, { recursive: true, mode: 0o700 });
+      fs.renameSync(path.join(wts, n), path.join(dest, n + "-" + Date.now()));
+    } catch (e) {}
+  }
+}
+
 // The run branch, read once to one sha, from its own loose ref file (never followed as a symbolic ref).
 const runRefFile = (repo) => path.join(repo.commonDir, "refs", "heads", ...repo.runRef.split("/"));
 async function runSha(repo) {
   let sha = "";
-  try { const f = runRefFile(repo); if (fs.lstatSync(f).isFile()) sha = (fs.readFileSync(f, "utf8").match(/^([0-9a-f]{40})\n?$/) || [])[1] || ""; } catch (e) {}
+  sha = (String(readPlain(runRefFile(repo), 64)).match(/^([0-9a-f]{40})\n?$/) || [])[1] || "";
   if (!sha) return "";
   const r = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", sha + "^{commit}"], srcCtx(repo, true));
   return r.ok && r.out === sha ? sha : "";
@@ -382,7 +423,7 @@ async function detachRun(repo) {
   if (!repo || !repo.commonDir || !repo.runDir || !/^chatgpt-run\/\d{6,25}\/[0-9TZ]+-[0-9a-f]{24}$/.test(String(repo.runRef || ""))) return { ok: false };
   let ok = true;
   const refFile = runRefFile(repo), reflog = path.join(repo.commonDir, "logs", "refs", "heads", ...repo.runRef.split("/"));
-  let tip = ""; try { tip = fs.readFileSync(refFile, "utf8").slice(0, 120).trim(); } catch (e) {}
+  const tip = (String(readPlain(refFile, 64)).match(/^([0-9a-f]{40})\n?$/) || [])[1] || "";   // only a plain sha is recorded
   try { fs.writeFileSync(path.join(repo.runDir, "run-branch.txt"), repo.runRef + " " + (tip || "(none)") + "\n"); } catch (e) {}
   const del = await git(["update-ref", "--no-deref", "-d", "refs/heads/" + repo.runRef], srcCtx(repo));
   for (const f of [refFile, refFile + ".lock", reflog]) {   // a ref the model broke: remove the file itself (unlink never follows a symlink)
@@ -425,8 +466,8 @@ async function verify(cwd, repo, safety) {
     if (e.name === ".git" || files.length >= 20) continue;
     const p = path.join(dir, e.name), r = rel ? rel + "/" + e.name : e.name;
     if (e.isDirectory()) { if (!repo) walk(p, r); } else if (e.isFile()) {
-      const st = fs.lstatSync(p);
-      if (st.isFile()) files.push("    " + r + " (" + st.size + " bytes, sha256 " + require("crypto").createHash("sha256").update(fs.readFileSync(p)).digest("hex").slice(0, 16) + ")");
+      const body = readPlain(p, 64 * 1024 * 1024, true);   // never through a symlink swapped in after the listing
+      if (body !== null) files.push("    " + r + " (" + body.length + " bytes, sha256 " + crypto.createHash("sha256").update(body).digest("hex").slice(0, 16) + ")");
     } } };
   if (!repo) { try { walk(cwd, ""); } catch (e) {} lines.push("- files in the work folder: " + (files.length ? "" : "none")); lines.push(...files); }
   return lines.join("\n");
@@ -507,13 +548,24 @@ function execArgs(text, { model, cwd, repo }) {
     "--permission-mode", "dontAsk", "--strict-mcp-config", "--no-session-persistence"];
 }
 
-function runClaude(claudeBin, text, cwd, env, repo) {
-  return new Promise((resolve) => execFile(claudeBin, execArgs(text, { cwd, repo }),
-    { cwd, env, timeout: EXEC_TIMEOUT_S * 1000, maxBuffer: 32 * 1024 * 1024 },
-    (err, stdout) => {
-      try { const j = JSON.parse(String(stdout).slice(String(stdout).indexOf("{"))); resolve({ ok: !j.is_error && typeof j.result === "string", text: j.result || "", status: j.subtype || "ok" }); }
-      catch (e) { resolve({ ok: false, text: "", status: err && err.killed ? "timed_out" : "run_failed" }); }
-    }));
+// The CLI runs in a process group of its own; when it exits (or times out) the whole group is killed, so a process a run
+// started in the background does not keep writing while the bridge checks the result.
+function runClaude(claudeBin, text, cwd, env, repo, { timeoutMs = EXEC_TIMEOUT_S * 1000 } = {}) {
+  return new Promise((resolve) => {
+    let out = "", size = 0, timedOut = false, done = false;
+    const child = spawn(claudeBin, execArgs(text, { cwd, repo }), { cwd, env, detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    const killGroup = () => { try { process.kill(-child.pid, "SIGKILL"); } catch (e) {} };
+    const timer = setTimeout(() => { timedOut = true; killGroup(); }, timeoutMs);
+    child.stdout.on("data", (b) => { size += b.length; if (size <= 32 * 1024 * 1024) out += b; else killGroup(); });
+    const finish = () => {
+      if (done) return; done = true; clearTimeout(timer); killGroup();
+      try { const j = JSON.parse(out.slice(out.indexOf("{"))); resolve({ ok: !j.is_error && typeof j.result === "string", text: j.result || "", status: j.subtype || "ok" }); }
+      catch (e) { resolve({ ok: false, text: "", status: timedOut ? "timed_out" : "run_failed" }); }
+    };
+    child.on("error", finish);
+    child.on("exit", () => { killGroup(); setTimeout(() => { child.stdout.destroy(); finish(); }, 5000).unref(); });   // a pipe held open by an escaped process does not stall the bridge
+    child.on("close", finish);
+  });
 }
 
 // Write-back to the task's own Zoho record, done by the bridge through chatgpt/task_update.py (fenced, no delete, read back).
@@ -560,7 +612,7 @@ async function recoverInterrupted(postFor) {
   await postFor(m.cid, "result", maskIds("This notice is from the Mac bridge, not from Claude Code. The run for task " + m.task_id + " (started " + m.at +
     ") was interrupted by a bridge restart and did not finish. Nothing was written to Zoho by this run. Send the same delegate_task again with a NEW idempotency_key.\n" +
     "STATUS: BLOCKED: run interrupted by a bridge restart; retry with a new idempotency_key.", [m.task_id]));
-  try { fs.unlinkSync(MARKER); } catch (e) {}
+  try { if (JSON.parse(fs.readFileSync(MARKER, "utf8")).cid === m.cid) fs.unlinkSync(MARKER); } catch (e) {}   // never a newer run's marker
   return m.cid;
 }
 
@@ -589,17 +641,20 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
     if (!task.open) return post("result", "STATUS: BLOCKED: task " + d.task_id + " (" + task.name + ") is closed.");
     let runDir;
     try { runDir = newRun(d.task_id); } catch (e) { return post("result", "STATUS: BLOCKED: could not make a new run folder (" + String(e.code || e.message).slice(0, 80) + ")."); }
+    const markRun = () => fs.writeFileSync(MARKER, JSON.stringify({ cid, task_id: d.task_id, at: new Date().toISOString(),
+      repo: repo && repo.ok ? { src: repo.src, commonDir: repo.commonDir, gitDir: repo.gitDir, runRef: repo.runRef, runDir: repo.runDir } : undefined }));
+    markRun();   // before anything is added to a repository, so a restart at any point is reported (and swept by the next run)
     let cwd = runDir.dir, runEnv = childEnv;
     if (d.repo) {
       repo = await prepareRepo(d, task, runDir);
       if (!repo.ok) { const why = repo.reason; repo = null; return post("result", "STATUS: BLOCKED: " + why + "."); }
       cwd = repo.cwd;
+      markRun();   // now with what recoverInterrupted needs to take the run back out of the repository
       // The model's git writes new objects to the run's own object folder; the repository's objects are read through an alternate.
-      runEnv = Object.assign({}, childEnv, { GIT_OBJECT_DIRECTORY: repo.objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(repo.commonDir, "objects") });
+      runEnv = Object.assign({}, childEnv, { GIT_OBJECT_DIRECTORY: repo.objects, GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(repo.commonDir, "objects"),
+        GIT_CONFIG_COUNT: "2", GIT_CONFIG_KEY_0: "gc.auto", GIT_CONFIG_VALUE_0: "0", GIT_CONFIG_KEY_1: "maintenance.auto", GIT_CONFIG_VALUE_1: "false" });   // no background gc that writes packs
     }
     await post("ack", "STATUS: STARTED " + cid + " on task " + d.task_id + " (" + task.name + ")" + (repo ? " in " + d.repo + " on branch " + repo.branch : "") + ". The result will follow on this correlation id.");
-    fs.writeFileSync(MARKER, JSON.stringify({ cid, task_id: d.task_id, at: new Date().toISOString(),
-      repo: repo ? { src: repo.src, commonDir: repo.commonDir, gitDir: repo.gitDir, runRef: repo.runRef, runDir: repo.runDir } : undefined }));
     log("delegated task", d.task_id, "started for", cid, "in", cwd);
     const r = await run(claudeBin, prompt(task, d, cid, repo), cwd, runEnv, repo);
     const safety = repo ? await branchSafety(repo) : null;
@@ -627,4 +682,4 @@ async function execute(env, d, { post: rawPost, claudeBin, childEnv, check = che
 }
 
 module.exports = { delegation, execute, recoverInterrupted, maskIds, prompt, checkTask, runClaude, updateTask, splitReport, summarize, prepareRepo, verify, execArgs, execSettings, EXEC_TOOLS, SETTINGS,
-  git, gitEnv, GIT_HARDEN, branchSafety, commitsSafety, validateWorktree, detachRun, isGitPath, pushBranch, newRun, transportConfig, GIT_BIN, MARKER };
+  git, gitEnv, GIT_HARDEN, branchSafety, commitsSafety, validateWorktree, detachRun, readPlain, isGitPath, pushBranch, newRun, transportConfig, GIT_BIN, MARKER };

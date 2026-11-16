@@ -101,7 +101,8 @@ test("prepareRepo: a new worktree whose .git file names a folder under the sourc
   assert.ok(repo.ok, repo.reason);
   assert.equal(repo.commonDir, fs.realpathSync(path.join(live, ".git")));
   assert.equal(path.dirname(repo.gitDir), path.join(repo.commonDir, "worktrees"));
-  assert.equal(repo.cwd, path.join(run.dir, "demo2"));
+  assert.equal(repo.cwd, path.join(run.dir, "demo2-" + run.id));
+  assert.equal(path.basename(repo.gitDir), "demo2-" + run.id, "the worktree's git folder name is unique to the run");
   assert.equal(repo.branch, "chatgpt/4000004-t");
   assert.equal(repo.runRef, "chatgpt-run/4000004/" + run.id);
   assert.equal(fs.readFileSync(path.join(repo.gitDir, "HEAD"), "utf8"), "ref: refs/heads/" + repo.runRef + "\n");
