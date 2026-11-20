@@ -16,7 +16,8 @@ SERVICE = "agent-bus-relay"
 AGENTS = ["bizops", "finance", "salesmkt", "systems", "compliance", "codedev",
           "claude-code", "zia-projects", "gpt",
           "claude-bizops", "claude-finance", "claude-salesmkt", "claude-systems", "claude-compliance",
-          "maryalice", "muse", "ops"]
+          "maryalice", "muse", "ops",
+          "command-deck"]  # Damian approved 20 Nov 2026: Command Deck Claude session; send and check only (internal, not admin)
 EXTERNAL = ["muse", "gpt"]
 CUT_FILE = os.path.expanduser("~/.agent-bus/cutoff.json")
 
