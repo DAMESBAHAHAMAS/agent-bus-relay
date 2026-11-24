@@ -1,0 +1,16 @@
+{
+  "_note": "Not applied. Review, then: openclaw config patch --file customer-liaison/openclaw/client-liaison.patch.json --dry-run. The agent's workspace must hold customer-liaison/agent/AGENTS.md as its AGENTS.md.",
+  "plugins": { "entries": { "customer-liaison": { "enabled": true } } },
+  "agents": {
+    "entries": {
+      "client-liaison": {
+        "identity": { "name": "Client Liaison", "theme": "Damian's AI assistant for one approved customer at a time. Works only on that customer's Zoho Projects tasks." },
+        "tools": {
+          "profile": "minimal",
+          "deny": ["group:runtime", "group:fs", "group:web", "group:ui", "group:nodes", "group:automation", "group:messaging", "group:sessions", "group:media", "group:agents", "gateway"],
+          "alsoAllow": ["liaison_tasks", "liaison_comment", "liaison_save_file", "liaison_reply", "liaison_ask_damian"]
+        }
+      }
+    }
+  }
+}

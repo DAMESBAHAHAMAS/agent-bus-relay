@@ -1,0 +1,40 @@
+{
+  "_note": "Copy to ~/.customer-liaison/config.json on the Mac. No secrets belong in this file.",
+  "agent_id": "client-liaison",
+  "client_line": null,
+  "client_line_note": "Damian picks the client line: his main WhatsApp number or his Zoho Voice business number. Put it here in E.164 form (+ and digits). Until it is set, every message is held.",
+  "desk_channel_id": null,
+  "escalation_cliq_chat_id": null,
+  "client_hours": {
+    "start": "10:00",
+    "end": "16:00",
+    "weekdays": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "reply_grace_minutes": 3
+  },
+  "closed_dates": [],
+  "usage": {
+    "weights": {
+      "message_in": 1,
+      "message_out": 1,
+      "task_touch": 1,
+      "file_saved": 1,
+      "escalation": 0
+    },
+    "rate_per_unit": null,
+    "currency": "USD",
+    "low_balance_units": 50,
+    "whatsapp_pass_through_per_message": null
+  },
+  "ledger_dir": "~/.customer-liaison/ledger",
+  "link_allowlist": [
+    "https://lovable.dev/",
+    "https://claude.ai/",
+    "https://www.godaddy.com/"
+  ]
+}

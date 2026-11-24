@@ -1,0 +1,17 @@
+{
+  "id": "customer-liaison",
+  "name": "Client Liaison",
+  "version": "0.1.0",
+  "configSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+  "activation": { "onStartup": true },
+  "contracts": {
+    "tools": ["liaison_tasks", "liaison_comment", "liaison_save_file", "liaison_reply", "liaison_ask_damian"]
+  },
+  "toolMetadata": {
+    "liaison_tasks": { "optional": true },
+    "liaison_comment": { "optional": true },
+    "liaison_save_file": { "optional": true },
+    "liaison_reply": { "optional": true },
+    "liaison_ask_damian": { "optional": true }
+  }
+}
