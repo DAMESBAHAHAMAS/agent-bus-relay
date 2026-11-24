@@ -1,0 +1,12 @@
+{
+  "name": "customer-liaison",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Client Liaison: serves one approved customer at a time on WhatsApp, limited to that customer's Zoho Projects tasks.",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "rehearse": "node rehearsal/run.mjs"
+  }
+}
